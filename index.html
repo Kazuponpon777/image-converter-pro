@@ -184,6 +184,44 @@
         const [quality, setQuality] = useState(0.9); // 0.1 to 1.0
         const [pdfPageRange, setPdfPageRange] = useState(""); // "1,3-5"
 
+        // Rename Settings
+        const [renamePrefix, setRenamePrefix] = useState("");
+        const [renameSuffix, setRenameSuffix] = useState("");
+        const [renameBase, setRenameBase] = useState("");
+        const [renameStartNum, setRenameStartNum] = useState(1);
+        const [renameDigits, setRenameDigits] = useState(3);
+
+        // Apply bulk rename to all files
+        const applyBulkRename = () => {
+          if (files.length === 0) return;
+          
+          const newFiles = files.map((file, index) => {
+            const ext = file.type === "image/png" ? ".png" : ".jpg";
+            let baseName;
+            
+            if (renameBase.trim()) {
+              // Sequential numbering mode
+              const num = renameStartNum + index;
+              const paddedNum = String(num).padStart(renameDigits, '0');
+              baseName = `${renameBase}${paddedNum}`;
+            } else {
+              // Keep original name, just add prefix/suffix
+              baseName = file.name.replace(/\.[^/.]+$/, "");
+            }
+            
+            const newName = `${renamePrefix}${baseName}${renameSuffix}${ext}`;
+            
+            return {
+              ...file,
+              name: newName,
+              userRenamed: true
+            };
+          });
+          
+          setFiles(newFiles);
+          addLog(`Renamed ${newFiles.length} files`);
+        };
+
         const generateId = () => Math.random().toString(36).substr(2, 9);
 
         useEffect(() => {
@@ -844,6 +882,112 @@
                   </div>
                 </div>
               </div>
+
+              {/* Rename Settings Panel */}
+              {files.length > 0 && (
+                <div className="p-5 rounded-xl glass-panel shadow-sm space-y-4">
+                  <div className="flex items-center space-x-2 border-b border-orange-200/60 pb-2 mb-2">
+                    <i data-lucide="text-cursor-input" className="w-5 h-5 text-orange-600"></i>
+                    <span className="font-semibold text-gray-700">一括リネーム</span>
+                    <span className="text-xs text-orange-600/70 ml-2">※ファイル名を一括変更</span>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4 items-end">
+                    {/* Prefix */}
+                    <div className="space-y-1">
+                      <label className="text-sm font-medium text-orange-800">プレフィックス</label>
+                      <input
+                        type="text"
+                        placeholder="先頭文字"
+                        value={renamePrefix}
+                        onChange={(e) => setRenamePrefix(e.target.value)}
+                        className="w-full bg-white border border-orange-200 text-gray-800 text-sm rounded-lg focus:ring-orange-500 focus:border-orange-500 block p-2 shadow-sm"
+                      />
+                    </div>
+
+                    {/* Base Name */}
+                    <div className="space-y-1">
+                      <label className="text-sm font-medium text-orange-800">ベース名 (連番用)</label>
+                      <input
+                        type="text"
+                        placeholder="例: image_"
+                        value={renameBase}
+                        onChange={(e) => setRenameBase(e.target.value)}
+                        className="w-full bg-white border border-orange-200 text-gray-800 text-sm rounded-lg focus:ring-orange-500 focus:border-orange-500 block p-2 shadow-sm"
+                      />
+                    </div>
+
+                    {/* Start Number */}
+                    <div className="space-y-1">
+                      <label className="text-sm font-medium text-orange-800">開始番号</label>
+                      <input
+                        type="number"
+                        min="0"
+                        value={renameStartNum}
+                        onChange={(e) => setRenameStartNum(parseInt(e.target.value) || 1)}
+                        className="w-full bg-white border border-orange-200 text-gray-800 text-sm rounded-lg focus:ring-orange-500 focus:border-orange-500 block p-2 shadow-sm"
+                      />
+                    </div>
+
+                    {/* Digits */}
+                    <div className="space-y-1">
+                      <label className="text-sm font-medium text-orange-800">桁数</label>
+                      <select
+                        value={renameDigits}
+                        onChange={(e) => setRenameDigits(parseInt(e.target.value))}
+                        className="w-full bg-white border border-orange-200 text-gray-800 text-sm rounded-lg focus:ring-orange-500 focus:border-orange-500 block p-2 shadow-sm"
+                      >
+                        <option value={1}>1桁</option>
+                        <option value={2}>2桁</option>
+                        <option value={3}>3桁</option>
+                        <option value={4}>4桁</option>
+                      </select>
+                    </div>
+
+                    {/* Suffix */}
+                    <div className="space-y-1">
+                      <label className="text-sm font-medium text-orange-800">サフィックス</label>
+                      <input
+                        type="text"
+                        placeholder="末尾文字"
+                        value={renameSuffix}
+                        onChange={(e) => setRenameSuffix(e.target.value)}
+                        className="w-full bg-white border border-orange-200 text-gray-800 text-sm rounded-lg focus:ring-orange-500 focus:border-orange-500 block p-2 shadow-sm"
+                      />
+                    </div>
+
+                    {/* Apply Button */}
+                    <div>
+                      <button
+                        onClick={applyBulkRename}
+                        className="w-full bg-orange-500 hover:bg-orange-600 text-white font-medium py-2 px-4 rounded-lg shadow-sm transition-colors flex items-center justify-center space-x-2"
+                      >
+                        <i data-lucide="check" className="w-4 h-4"></i>
+                        <span>適用</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Preview */}
+                  {(renamePrefix || renameSuffix || renameBase) && files.length > 0 && (
+                    <div className="mt-3 p-3 bg-orange-50 rounded-lg border border-orange-200">
+                      <span className="text-xs text-orange-700 font-medium">プレビュー: </span>
+                      <span className="text-sm text-orange-900 font-mono">
+                        {(() => {
+                          const ext = targetFormat === "image/png" ? ".png" : ".jpg";
+                          if (renameBase.trim()) {
+                            const paddedNum = String(renameStartNum).padStart(renameDigits, '0');
+                            return `${renamePrefix}${renameBase}${paddedNum}${renameSuffix}${ext}`;
+                          } else {
+                            const sampleBase = files[0]?.name.replace(/\.[^/.]+$/, "") || "filename";
+                            return `${renamePrefix}${sampleBase}${renameSuffix}${ext}`;
+                          }
+                        })()}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Drop Zone */}
               <div

@@ -1,0 +1,856 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ultimate Image & PDF Converter (V10 - Rename Fixed)</title>
+
+    <!-- React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+
+    <!-- Babel -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- PDF.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+
+    <!-- JSZip & FileSaver -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+
+    <!-- heic2any (For iPhone HEIC support) -->
+    <script src="https://unpkg.com/heic2any@0.0.4/dist/heic2any.min.js"></script>
+
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&family=Noto+Sans+JP:wght@400;500;700&display=swap');
+
+        body {
+            font-family: 'Inter', 'Noto Sans JP', sans-serif;
+            background-color: #fff7ed;
+            /* orange-50 */
+            color: #431407;
+            /* orange-950 */
+        }
+
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: #fed7aa;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #fb923c;
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #ea580c;
+        }
+
+        .drop-zone {
+            background-image: url("data:image/svg+xml,%3csvg width='100%25' height='100%25' xmlns='http://www.w3.org/2000/svg'%3e%3crect width='100%25' height='100%25' fill='none' rx='16' ry='16' stroke='%23F97316FF' stroke-width='2' stroke-dasharray='12%2c 12' stroke-dashoffset='0' stroke-linecap='square'/%3e%3c/svg%3e");
+            transition: all 0.3s ease;
+        }
+
+        .drop-zone:hover,
+        .drop-zone.active {
+            background-color: rgba(249, 115, 22, 0.1);
+            transform: scale(1.01);
+        }
+
+        .glass-panel {
+            background: rgba(255, 247, 237, 0.8);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(251, 146, 60, 0.2);
+        }
+
+        .loader {
+            border: 3px solid rgba(251, 146, 60, 0.2);
+            border-radius: 50%;
+            border-top: 3px solid #ea580c;
+            width: 24px;
+            height: 24px;
+            -webkit-animation: spin 1s linear infinite;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% {
+                transform: rotate(0deg);
+            }
+
+            100% {
+                transform: rotate(360deg);
+            }
+        }
+
+        /* Input highlight animation */
+        .name-input:focus,
+        .size-input:focus,
+        .page-input:focus {
+            background-color: rgba(255, 255, 255, 0.8);
+            border-color: #f97316;
+            box-shadow: 0 0 0 2px rgba(249, 115, 22, 0.2);
+        }
+
+        /* Range slider styling */
+        input[type=range] {
+            -webkit-appearance: none;
+            background: transparent;
+        }
+
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            height: 16px;
+            width: 16px;
+            border-radius: 50%;
+            background: #ea580c;
+            cursor: pointer;
+            margin-top: -6px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+        }
+
+        input[type=range]::-webkit-slider-runnable-track {
+            width: 100%;
+            height: 4px;
+            cursor: pointer;
+            background: #fed7aa;
+            border-radius: 2px;
+        }
+
+        .tool-btn {
+            @apply p-1.5 bg-white/90 text-gray-600 rounded-full shadow-sm hover:bg-orange-500 hover:text-white transition-all transform hover:scale-110 border border-gray-200;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        // PDF.js Worker Configuration
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+        const { useState, useEffect, useRef, useCallback } = React;
+
+        const App = () => {
+            const [files, setFiles] = useState([]);
+            const [isDragging, setIsDragging] = useState(false);
+            const [isProcessing, setIsProcessing] = useState(false);
+            const [processStatus, setProcessStatus] = useState("");
+
+            // Settings
+            const [targetFormat, setTargetFormat] = useState("image/png");
+            const [maxWidth, setMaxWidth] = useState(""); // Empty means no resize
+            const [quality, setQuality] = useState(0.9); // 0.1 to 1.0
+            const [pdfPageRange, setPdfPageRange] = useState(""); // "1,3-5"
+
+            const generateId = () => Math.random().toString(36).substr(2, 9);
+
+            useEffect(() => {
+                lucide.createIcons();
+            }, [files, isProcessing]);
+
+            const handleDragOver = (e) => {
+                e.preventDefault();
+                setIsDragging(true);
+            };
+
+            const handleDragLeave = () => {
+                setIsDragging(false);
+            };
+
+            const handleDrop = async (e) => {
+                e.preventDefault();
+                setIsDragging(false);
+                const droppedFiles = Array.from(e.dataTransfer.files);
+                await processFiles(droppedFiles);
+            };
+
+            const handleFileSelect = async (e) => {
+                const selectedFiles = Array.from(e.target.files);
+                await processFiles(selectedFiles);
+            };
+
+            // --- Parsing Page Range ---
+            const parsePageRange = (rangeStr, maxPages) => {
+                if (!rangeStr.trim()) return null; // All pages
+                const pages = new Set();
+                const parts = rangeStr.split(',');
+
+                parts.forEach(part => {
+                    const range = part.trim().split('-');
+                    if (range.length === 2) {
+                        const start = parseInt(range[0]);
+                        const end = parseInt(range[1]);
+                        if (!isNaN(start) && !isNaN(end)) {
+                            for (let i = start; i <= end; i++) pages.add(i);
+                        }
+                    } else {
+                        const page = parseInt(part);
+                        if (!isNaN(page)) pages.add(page);
+                    }
+                });
+                return pages;
+            };
+
+            // --- Image Processing Functions ---
+            const resizeImage = (dataUrl, widthLimit, currentQuality, targetType) => {
+                return new Promise((resolve) => {
+                    const img = new Image();
+                    img.onload = () => {
+                        const canvas = document.createElement('canvas');
+                        let width = img.width;
+                        let height = img.height;
+
+                        // Calculate new size
+                        if (widthLimit && !isNaN(widthLimit) && width > widthLimit) {
+                            height = Math.round((height * widthLimit) / width);
+                            width = parseInt(widthLimit);
+                        }
+
+                        canvas.width = width;
+                        canvas.height = height;
+                        const ctx = canvas.getContext('2d');
+                        ctx.drawImage(img, 0, 0, width, height);
+
+                        resolve(canvas.toDataURL(targetType, parseFloat(currentQuality)));
+                    };
+                    img.src = dataUrl;
+                });
+            };
+
+            const rotateImage = async (id, direction) => {
+                const fileIndex = files.findIndex(f => f.id === id);
+                if (fileIndex === -1) return;
+
+                const file = files[fileIndex];
+                const angle = direction === 'left' ? -90 : 90;
+
+                // Rotate ORIGINAL source to preserve quality on subsequent edits
+                const img = new Image();
+                img.src = file.originalSrc;
+
+                await new Promise(r => img.onload = r);
+
+                const canvas = document.createElement('canvas');
+                // Swap width and height for 90 degree rotation
+                canvas.width = img.height;
+                canvas.height = img.width;
+
+                const ctx = canvas.getContext('2d');
+                ctx.translate(canvas.width / 2, canvas.height / 2);
+                ctx.rotate(angle * Math.PI / 180);
+                ctx.drawImage(img, -img.width / 2, -img.height / 2);
+
+                // New original is the rotated full-res image
+                // We use 'image/png' for intermediate original to avoid generation loss if possible, 
+                // or just keep original type. Let's use PNG for rotation to avoid artifacts.
+                const newOriginalSrc = canvas.toDataURL("image/png", 1.0);
+
+                // Now apply current settings to this new original
+                const newDisplaySrc = await resizeImage(newOriginalSrc, maxWidth, quality, targetFormat);
+
+                const newFiles = [...files];
+                newFiles[fileIndex] = {
+                    ...file,
+                    originalSrc: newOriginalSrc,
+                    src: newDisplaySrc,
+                    size: Math.round((newDisplaySrc.length * 3) / 4)
+                };
+                setFiles(newFiles);
+            };
+
+            // --- Copy to Clipboard ---
+            const copyToClipboard = async (file) => {
+                try {
+                    const response = await fetch(file.src);
+                    const blob = await response.blob();
+                    await navigator.clipboard.write([
+                        new ClipboardItem({
+                            [blob.type]: blob
+                        })
+                    ]);
+                    alert("クリップボードにコピーしました！ (Ctrl+Vで貼り付け)");
+                } catch (err) {
+                    console.error(err);
+                    alert("コピーに失敗しました。ブラウザが対応していない可能性があります。");
+                }
+            };
+
+            // --- Rename Function ---
+            const updateFileName = (id, newName) => {
+                setFiles(prevFiles => prevFiles.map(f =>
+                    f.id === id ? { ...f, name: newName } : f
+                ));
+            };
+
+            // --- Dynamic Resizing Effect ---
+            useEffect(() => {
+                const timer = setTimeout(async () => {
+                    if (files.length === 0) return;
+
+                    // Check if we actually need to update anything
+                    // This is a simple check; for more complex apps we might track "dirty" state
+                    // But here we just re-process all based on current settings.
+
+                    const newFiles = [...files];
+                    let changed = false;
+
+                    for (let i = 0; i < newFiles.length; i++) {
+                        const file = newFiles[i];
+                        // We always re-process from originalSrc to ensure quality settings are applied freshly
+                        // This avoids "double compression" artifacts if we were to re-compress the already compressed src
+                        const newSrc = await resizeImage(file.originalSrc, maxWidth, quality, targetFormat);
+                        const newSize = Math.round((newSrc.length * 3) / 4);
+
+                        // Update type if format changed
+                        const newType = targetFormat;
+                        const ext = targetFormat === "image/png" ? ".png" : ".jpg";
+                        // Robust replacement: replace existing extension or append new one
+                        const newName = file.name.replace(/\.[^/.]+$/, "") + ext;
+
+                        if (file.src !== newSrc || file.type !== newType) {
+                            newFiles[i] = {
+                                ...file,
+                                src: newSrc,
+                                size: newSize,
+                                type: newType,
+                                name: newName
+                            };
+                            changed = true;
+                        }
+                    }
+
+                    if (changed) {
+                        setFiles(newFiles);
+                    }
+                }, 500); // 500ms debounce
+
+                return () => clearTimeout(timer);
+            }, [maxWidth, quality, targetFormat]); // Removed 'files' from dependency to avoid infinite loop, but we need to handle new files carefully.
+            // Actually, if we remove 'files', it won't run for new files if settings don't change.
+            // BUT, processFiles adds files with initial processing. 
+            // Let's keep the logic: processFiles adds files. The Effect updates them if settings change.
+            // If we add 'files', every time setFiles is called, this runs again. Infinite loop risk if we always create new strings.
+            // Solution: The Effect should only run when settings change. 
+            // When new files are added, they should be processed with CURRENT settings immediately in processFiles.
+
+
+            // --- Main Processing Logic ---
+            const processFiles = async (fileList) => {
+                setIsProcessing(true);
+                setProcessStatus("ファイルを読み込んでいます...");
+
+                const newProcessedFiles = [];
+
+                for (const file of fileList) {
+                    try {
+                        let processedItems = [];
+
+                        const isHeic = file.name.toLowerCase().endsWith('.heic') || file.type === 'image/heic';
+
+                        if (file.type === "application/pdf") {
+                            setProcessStatus(`PDFを変換中: ${file.name}`);
+                            processedItems = await convertPdfToImages(file);
+                        } else if (isHeic) {
+                            setProcessStatus(`iPhone画像(HEIC)を変換中: ${file.name}`);
+                            const convertedBlob = await heic2any({
+                                blob: file,
+                                toType: "image/jpeg",
+                                quality: 1.0 // Convert at high quality first
+                            });
+
+                            const convertedFile = new File(
+                                [Array.isArray(convertedBlob) ? convertedBlob[0] : convertedBlob],
+                                file.name.replace(/\.heic$/i, ".jpg"),
+                                { type: "image/jpeg" }
+                            );
+                            convertedFile.originalSize = file.size;
+
+                            const item = await processImage(convertedFile, true);
+                            processedItems = [item];
+
+                        } else if (file.type.startsWith("image/")) {
+                            setProcessStatus(`画像を処理中: ${file.name}`);
+                            const item = await processImage(file);
+                            processedItems = [item];
+                        }
+
+                        // Apply Initial Resize & Quality
+                        // We do this here so the user sees the correct state immediately without waiting for the Effect debounce
+                        for (let i = 0; i < processedItems.length; i++) {
+                            const resizedDataUrl = await resizeImage(processedItems[i].originalSrc, maxWidth, quality, targetFormat);
+                            processedItems[i].src = resizedDataUrl;
+                            processedItems[i].size = Math.round((resizedDataUrl.length * 3) / 4);
+
+                            // Adjust extension if needed based on targetFormat
+                            const ext = targetFormat === "image/png" ? ".png" : ".jpg";
+                            if (!processedItems[i].name.endsWith(ext)) {
+                                processedItems[i].name = processedItems[i].name.replace(/\.[^/.]+$/, "") + ext;
+                            }
+                            processedItems[i].type = targetFormat;
+                        }
+
+                        newProcessedFiles.push(...processedItems);
+                    } catch (error) {
+                        console.error("Processing Error:", error);
+                        alert(`エラーが発生しました: ${file.name}\n${error.message}`);
+                    }
+                }
+
+                setFiles(prev => [...newProcessedFiles, ...prev]);
+                setIsProcessing(false);
+                setProcessStatus("");
+            };
+
+            const convertPdfToImages = async (file) => {
+                const arrayBuffer = await file.arrayBuffer();
+                const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+                const pageCount = pdf.numPages;
+                const images = [];
+
+                const targetPages = parsePageRange(pdfPageRange);
+
+                for (let i = 1; i <= pageCount; i++) {
+                    if (targetPages && !targetPages.has(i)) continue;
+
+                    setProcessStatus(`${file.name} - ${i} / ${pageCount} ページ目を変換中...`);
+                    const page = await pdf.getPage(i);
+
+                    const scale = 2.0;
+                    const viewport = page.getViewport({ scale });
+
+                    const canvas = document.createElement('canvas');
+                    const context = canvas.getContext('2d');
+                    canvas.height = viewport.height;
+                    canvas.width = viewport.width;
+
+                    await page.render({
+                        canvasContext: context,
+                        viewport: viewport
+                    }).promise;
+
+                    // Store high-res original
+                    const originalDataUrl = canvas.toDataURL("image/png", 1.0);
+                    const estimatedSize = Math.round((originalDataUrl.length * 3) / 4);
+
+                    images.push({
+                        id: generateId(),
+                        name: `${file.name.replace('.pdf', '')}_page_${i}.png`, // Default to png initially
+                        originalName: file.name,
+                        originalSrc: originalDataUrl, // Store original
+                        src: originalDataUrl, // Will be updated by processFiles loop
+                        type: "image/png",
+                        size: estimatedSize,
+                        originalSize: estimatedSize,
+                        isPdfPage: true,
+                        pageNumber: i
+                    });
+                }
+                return images;
+            };
+
+            const processImage = async (file, useFileOriginalSize = false) => {
+                return new Promise((resolve) => {
+                    const reader = new FileReader();
+                    reader.onload = (e) => {
+                        resolve({
+                            id: generateId(),
+                            name: file.name,
+                            originalName: file.name,
+                            originalSrc: e.target.result, // Store original
+                            src: e.target.result,
+                            type: file.type,
+                            size: file.size,
+                            originalSize: useFileOriginalSize ? file.originalSize : file.size,
+                            isPdfPage: false
+                        });
+                    };
+                    reader.readAsDataURL(file);
+                });
+            };
+
+            const removeFile = (id) => {
+                setFiles(files.filter(f => f.id !== id));
+            };
+
+            const clearAll = () => {
+                if (confirm("全てのファイルを削除しますか？")) {
+                    setFiles([]);
+                }
+            };
+
+            const getSafeName = (file) => {
+                const ext = file.type === "image/png" ? ".png" : ".jpg";
+                // If the name already ends with the correct extension, return it as is.
+                if (file.name.toLowerCase().endsWith(ext)) return file.name;
+
+                // If it has some other extension, or no extension at all, replace/append.
+                // This regex replaces the last segment starting with a dot, if it exists.
+                // If there is no dot, it simply appends.
+                // But wait, replace(/\.[^/.]+$/, "") only works if there is an extension.
+                // If "filename", it returns "filename". Then we append + ext. Correct.
+                return file.name.replace(/\.[^/.]+$/, "") + ext;
+            };
+
+            const downloadFile = (file) => {
+                const safeName = getSafeName(file);
+                console.log("Downloading:", safeName, file.src.substring(0, 50));
+                // Debug alert
+                // alert(`Filename: ${safeName}\nType: ${file.type}`); 
+                saveAs(file.src, safeName);
+            };
+
+            const downloadAllZip = async () => {
+                if (files.length <= 1) return;
+
+                setIsProcessing(true);
+                setProcessStatus("ZIPファイルを作成中...");
+
+                const zip = new JSZip();
+                const folder = zip.folder("converted_images");
+
+                files.forEach(file => {
+                    const data = file.src.split(',')[1];
+                    folder.file(getSafeName(file), data, { base64: true });
+                });
+
+                const content = await zip.generateAsync({ type: "blob" });
+                saveAs(content, `converted_files_${new Date().getTime()}.zip`);
+
+                setIsProcessing(false);
+                setProcessStatus("");
+            };
+
+            const formatBytes = (bytes, decimals = 1) => {
+                if (!+bytes) return '0 B';
+                const k = 1024;
+                const dm = decimals < 0 ? 0 : decimals;
+                const sizes = ['B', 'KB', 'MB', 'GB'];
+                const i = Math.floor(Math.log(bytes) / Math.log(k));
+                return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`;
+            };
+
+            return (
+                <div className="min-h-screen pb-20 bg-orange-50 text-gray-800">
+                    {/* Header */}
+                    <header className="sticky top-0 z-50 bg-orange-600 text-white shadow-md">
+                        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+                            <div className="flex items-center space-x-3">
+                                <div className="bg-white/20 p-2 rounded-lg">
+                                    <i data-lucide="layers" className="w-6 h-6 text-white"></i>
+                                </div>
+                                <h1 className="text-xl font-bold text-white hidden sm:block">
+                                    Media Converter Pro
+                                </h1>
+                            </div>
+                            <div className="flex items-center space-x-4">
+                                <div className="hidden md:flex items-center space-x-2 text-sm text-white bg-white/20 px-3 py-1.5 rounded-full">
+                                    <i data-lucide="file-type" className="w-4 h-4"></i>
+                                    <span>Supports: PNG, JPG, PDF, HEIC</span>
+                                </div>
+                                {files.length > 0 && (
+                                    <button
+                                        onClick={files.length === 1 ? () => downloadFile(files[0]) : downloadAllZip}
+                                        disabled={isProcessing}
+                                        className="flex items-center space-x-2 bg-white hover:bg-orange-50 text-orange-600 px-4 py-2 rounded-lg text-sm font-medium transition-colors shadow-sm"
+                                    >
+                                        <i data-lucide="download" className="w-4 h-4"></i>
+                                        <span>{files.length === 1 ? "ダウンロード" : "一括ZIP"}</span>
+                                    </button>
+                                )}
+                            </div>
+                        </div>
+                    </header>
+
+                    <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
+
+                        {/* Settings Bar */}
+                        <div className="p-5 rounded-xl glass-panel shadow-sm space-y-4">
+
+                            <div className="flex items-center space-x-2 border-b border-orange-200/60 pb-2 mb-2">
+                                <i data-lucide="settings-2" className="w-5 h-5 text-orange-600"></i>
+                                <span className="font-semibold text-gray-700">詳細設定</span>
+                                <span className="text-xs text-orange-600/70 ml-2">※変換前に設定してください</span>
+                            </div>
+
+                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                                {/* Format */}
+                                <div className="space-y-2">
+                                    <label className="text-sm font-medium text-orange-800">出力形式</label>
+                                    <select
+                                        value={targetFormat}
+                                        onChange={(e) => setTargetFormat(e.target.value)}
+                                        className="w-full bg-white border border-orange-200 text-gray-800 text-sm rounded-lg focus:ring-orange-500 focus:border-orange-500 block p-2.5 shadow-sm"
+                                    >
+                                        <option value="image/png">PNG (透過・高画質)</option>
+                                        <option value="image/jpeg">JPG (写真・軽量)</option>
+                                    </select>
+                                </div>
+
+                                {/* Quality Slider */}
+                                <div className="space-y-2">
+                                    <div className="flex justify-between">
+                                        <label className="text-sm font-medium text-orange-800">画質 / 圧縮率</label>
+                                        <span className="text-sm font-bold text-orange-600">{Math.round(quality * 100)}%</span>
+                                    </div>
+                                    <input
+                                        type="range"
+                                        min="0.1"
+                                        max="1.0"
+                                        step="0.1"
+                                        value={quality}
+                                        onChange={(e) => setQuality(parseFloat(e.target.value))}
+                                        className="w-full h-2 bg-orange-200 rounded-lg appearance-none cursor-pointer"
+                                    />
+                                    <div className="flex justify-between text-[10px] text-gray-500">
+                                        <span>低容量</span>
+                                        <span>高画質</span>
+                                    </div>
+                                </div>
+
+                                {/* Resize Input */}
+                                <div className="space-y-2">
+                                    <label className="text-sm font-medium text-orange-800">リサイズ (最大幅px)</label>
+                                    <div className="relative">
+                                        <input
+                                            type="number"
+                                            placeholder="例: 1200 (空欄=そのまま)"
+                                            value={maxWidth}
+                                            onChange={(e) => setMaxWidth(e.target.value)}
+                                            className="w-full bg-white border border-orange-200 text-gray-800 text-sm rounded-lg focus:ring-orange-500 focus:border-orange-500 block p-2.5 pr-8 shadow-sm"
+                                        />
+                                    </div>
+                                </div>
+
+                                {/* PDF Page Range */}
+                                <div className="space-y-2">
+                                    <label className="text-sm font-medium text-orange-800">PDFページ指定</label>
+                                    <input
+                                        type="text"
+                                        placeholder="例: 1, 3-5 (空欄=全頁)"
+                                        value={pdfPageRange}
+                                        onChange={(e) => setPdfPageRange(e.target.value)}
+                                        className="page-input w-full bg-white border border-orange-200 text-gray-800 text-sm rounded-lg focus:ring-orange-500 focus:border-orange-500 block p-2.5 shadow-sm"
+                                    />
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Drop Zone */}
+                        <div
+                            className={`drop-zone relative rounded-3xl p-10 text-center cursor-pointer border-2 border-transparent ${isDragging ? 'active border-orange-500' : ''}`}
+                            onDragOver={handleDragOver}
+                            onDragLeave={handleDragLeave}
+                            onDrop={handleDrop}
+                            onClick={() => document.getElementById('fileInput').click()}
+                        >
+                            <input
+                                type="file"
+                                id="fileInput"
+                                className="hidden"
+                                multiple
+                                accept="image/*,.pdf,.heic"
+                                onChange={handleFileSelect}
+                            />
+
+                            <div className="flex flex-col items-center justify-center space-y-4">
+                                <div className={`p-6 rounded-full bg-white/80 ring-1 ring-orange-200 shadow-2xl transition-transform duration-300 ${isDragging ? 'scale-110' : ''}`}>
+                                    <i data-lucide="upload-cloud" className="w-12 h-12 text-orange-500"></i>
+                                </div>
+                                <div className="space-y-1">
+                                    <h3 className="text-lg font-semibold text-gray-800">
+                                        ファイルをここにドロップ
+                                    </h3>
+                                    <p className="text-orange-600 text-sm">
+                                        または クリックして選択
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Loading State */}
+                        {isProcessing && (
+                            <div className="fixed inset-0 z-50 flex items-center justify-center bg-orange-50/80 backdrop-blur-sm">
+                                <div className="bg-white p-6 rounded-2xl shadow-2xl border border-orange-200 flex flex-col items-center space-y-4">
+                                    <div className="loader"></div>
+                                    <p className="text-orange-600 font-medium animate-pulse">{processStatus}</p>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Results Grid */}
+                        {files.length > 0 && (
+                            <div className="space-y-4">
+                                <div className="flex items-center justify-between">
+                                    <h2 className="text-lg font-semibold text-gray-800 flex items-center space-x-2">
+                                        <i data-lucide="image" className="w-5 h-5 text-orange-500"></i>
+                                        <span>変換結果 ({files.length}枚)</span>
+                                    </h2>
+                                    <button
+                                        onClick={clearAll}
+                                        className="text-sm text-red-500 hover:text-red-600 flex items-center space-x-1"
+                                    >
+                                        <i data-lucide="trash-2" className="w-4 h-4"></i>
+                                        <span>全てクリア</span>
+                                    </button>
+                                </div>
+
+                                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+                                    {files.map((file) => (
+                                        <div key={file.id} className="group relative bg-white rounded-xl overflow-hidden border border-orange-200 hover:border-orange-500/50 transition-all shadow-lg hover:shadow-xl hover:shadow-orange-500/10 flex flex-col">
+
+                                            {/* Image Preview & Controls */}
+                                            <div className="aspect-[3/2] bg-orange-100/50 relative overflow-hidden shrink-0">
+                                                <div className="absolute inset-0 bg-[url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI4IiBoZWlnaHQ9IjgiPgo8cmVjdCB3aWR0aD0iOCIgaGVpZ2h0PSI4IiBmaWxsPSIjZmZmN2VkIi8+CjxyZWN0IHdpZHRoPSI0IiBoZWlnaHQ9IjQiIGZpbGw9IiNmZWQ3YWEiLz4KPHJlY3QgeD0iNCIgeT0iNCIgd2lkdGg9IjQiIGhlaWdodD0iNCIgZmlsbD0iI2ZlZDdhYSIvPgo8L3N2Zz4=')] opacity-50"></div>
+                                                <img
+                                                    src={file.src}
+                                                    alt={file.name}
+                                                    className="absolute inset-0 w-full h-full object-contain p-4 transition-transform duration-500 group-hover:scale-105"
+                                                />
+
+                                                {/* Rotation Buttons */}
+                                                <div className="absolute top-2 left-2 flex space-x-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                                    <button onClick={() => rotateImage(file.id, 'left')} className="tool-btn" title="左回転">
+                                                        <i data-lucide="rotate-ccw" className="w-3 h-3"></i>
+                                                    </button>
+                                                    <button onClick={() => rotateImage(file.id, 'right')} className="tool-btn" title="右回転">
+                                                        <i data-lucide="rotate-cw" className="w-3 h-3"></i>
+                                                    </button>
+                                                </div>
+
+                                                {/* Badge */}
+                                                <div className="absolute top-2 right-2">
+                                                    {file.isPdfPage ? (
+                                                        <span className="bg-red-500 text-white text-[10px] font-bold px-2 py-1 rounded shadow-sm">
+                                                            P.{file.pageNumber}
+                                                        </span>
+                                                    ) : (
+                                                        <span className="bg-orange-500 text-white text-[10px] font-bold px-2 py-1 rounded shadow-sm">
+                                                            IMG
+                                                        </span>
+                                                    )}
+                                                </div>
+
+                                                {/* Overlay Actions */}
+                                                <div className="absolute inset-0 bg-white/60 opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex flex-col items-center justify-center space-y-2 backdrop-blur-[2px]">
+                                                    <div className="flex space-x-2">
+                                                        <button
+                                                            onClick={() => copyToClipboard(file)}
+                                                            className="p-2 bg-green-600 hover:bg-green-500 text-white rounded-lg shadow-lg transform transition-transform hover:scale-105 flex items-center space-x-1"
+                                                            title="コピー (Ctrl+Vで貼り付け)"
+                                                        >
+                                                            <i data-lucide="copy" className="w-4 h-4"></i>
+                                                            <span className="text-xs font-bold">Copy</span>
+                                                        </button>
+                                                        <button
+                                                            onClick={() => downloadFile(file)}
+                                                            className="p-2 bg-orange-600 hover:bg-orange-500 text-white rounded-lg shadow-lg transform transition-transform hover:scale-105"
+                                                            title="ダウンロード"
+                                                        >
+                                                            <i data-lucide="download" className="w-4 h-4"></i>
+                                                        </button>
+                                                    </div>
+                                                    <button
+                                                        onClick={() => removeFile(file.id)}
+                                                        className="px-3 py-1 bg-gray-200 hover:bg-red-500 text-gray-600 hover:text-white rounded-full text-xs font-medium shadow transition-colors"
+                                                    >
+                                                        削除
+                                                    </button>
+                                                </div>
+                                            </div>
+
+                                            {/* Info Area with Fixed Rename Input */}
+                                            <div className="p-3 bg-white flex flex-col justify-between flex-grow">
+                                                <div className="flex items-center space-x-2 mb-2 w-full">
+                                                    <i data-lucide="pencil" className="w-4 h-4 text-orange-400 flex-shrink-0"></i>
+                                                    <div className="flex-grow min-w-0">
+                                                        <input
+                                                            type="text"
+                                                            value={file.name}
+                                                            onChange={(e) => updateFileName(file.id, e.target.value)}
+                                                            className="w-full bg-transparent border-b border-orange-100 hover:border-orange-300 focus:border-orange-500 text-sm font-medium text-gray-800 focus:outline-none transition-colors px-1 py-0.5 rounded-sm"
+                                                            placeholder="ファイル名"
+                                                        />
+                                                    </div>
+                                                </div>
+                                                <div className="flex items-center justify-between text-xs text-orange-600 pl-6">
+                                                    {/* Size Comparison */}
+                                                    <div className="flex items-center space-x-1">
+                                                        {file.originalSize && file.originalSize !== file.size ? (
+                                                            <>
+                                                                <span className="text-gray-400 line-through">{formatBytes(file.originalSize)}</span>
+                                                                <i data-lucide="arrow-right" className="w-3 h-3 text-orange-400"></i>
+                                                                <span className="font-bold text-orange-700">{formatBytes(file.size)}</span>
+                                                            </>
+                                                        ) : (
+                                                            <span>{formatBytes(file.size)}</span>
+                                                        )}
+                                                    </div>
+                                                    <span className="uppercase text-gray-500 font-medium tracking-wide text-[10px]">{file.type.split('/')[1]}</span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Features Guide (Empty State) */}
+                        {files.length === 0 && (
+                            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-8 opacity-70">
+                                <div className="text-center p-4">
+                                    <div className="w-8 h-8 bg-orange-100 rounded-full flex items-center justify-center mx-auto mb-2 text-orange-600">
+                                        <i data-lucide="copy" className="w-4 h-4"></i>
+                                    </div>
+                                    <h4 className="text-xs font-bold text-gray-600">コピー機能</h4>
+                                    <p className="text-[10px] text-gray-500">ワンクリックでSlackへ</p>
+                                </div>
+                                <div className="text-center p-4">
+                                    <div className="w-8 h-8 bg-orange-100 rounded-full flex items-center justify-center mx-auto mb-2 text-orange-600">
+                                        <i data-lucide="rotate-cw" className="w-4 h-4"></i>
+                                    </div>
+                                    <h4 className="text-xs font-bold text-gray-600">画像回転</h4>
+                                    <p className="text-[10px] text-gray-500">スキャン時の向き補正</p>
+                                </div>
+                                <div className="text-center p-4">
+                                    <div className="w-8 h-8 bg-orange-100 rounded-full flex items-center justify-center mx-auto mb-2 text-orange-600">
+                                        <i data-lucide="sliders" className="w-4 h-4"></i>
+                                    </div>
+                                    <h4 className="text-xs font-bold text-gray-600">画質調整</h4>
+                                    <p className="text-[10px] text-gray-500">容量制限も楽々クリア</p>
+                                </div>
+                                <div className="text-center p-4">
+                                    <div className="w-8 h-8 bg-orange-100 rounded-full flex items-center justify-center mx-auto mb-2 text-orange-600">
+                                        <i data-lucide="file-minus" className="w-4 h-4"></i>
+                                    </div>
+                                    <h4 className="text-xs font-bold text-gray-600">ページ指定</h4>
+                                    <p className="text-[10px] text-gray-500">必要なページだけ抽出</p>
+                                </div>
+                            </div>
+                        )}
+                    </main>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+
+</html>
