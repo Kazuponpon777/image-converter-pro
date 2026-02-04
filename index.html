@@ -449,7 +449,7 @@
               maxWidth,
               maxHeight,
               quality,
-              targetFormat,
+              targetFormat === "application/pdf" ? "image/jpeg" : targetFormat,
             );
             const newSize = Math.round((newSrc.length * 3) / 4);
 
@@ -541,7 +541,7 @@
                 maxWidth,
                 maxHeight,
                 quality,
-                targetFormat,
+                targetFormat === "application/pdf" ? "image/jpeg" : targetFormat,
               );
               processedItems[i].src = resizedDataUrl;
               processedItems[i].size = Math.round(
@@ -549,12 +549,20 @@
               );
 
               // Adjust extension if needed based on targetFormat
-              const ext = targetFormat === "image/png" ? ".png" : ".jpg";
+              // Adjust extension if needed based on targetFormat
+              const extMap = {
+                "image/png": ".png",
+                "image/jpeg": ".jpg",
+                "application/pdf": ".jpg" // internally use jpg for preview
+              };
+              const ext = extMap[targetFormat] || ".jpg";
+
               if (!processedItems[i].name.endsWith(ext)) {
                 processedItems[i].name =
                   processedItems[i].name.replace(/\.[^/.]+$/, "") + ext;
               }
-              processedItems[i].type = targetFormat;
+              // Set type to jpeg if pdf selected (for internal storage)
+              processedItems[i].type = targetFormat === "application/pdf" ? "image/jpeg" : targetFormat;
             }
 
             newProcessedFiles.push(...processedItems);
@@ -819,28 +827,42 @@
                 </div>
                 {files.length > 0 && (
                   <div className="flex space-x-2">
-                    <button
-                      onClick={
-                        files.length === 1
-                          ? () => downloadFile(files[0])
-                          : downloadAllZip
-                      }
-                      disabled={isProcessing}
-                      className="flex items-center space-x-2 bg-white hover:bg-orange-50 text-orange-600 px-4 py-2 rounded-lg text-sm font-medium transition-colors shadow-sm"
-                    >
-                      <i data-lucide="download" className="w-4 h-4"></i>
-                      <span>
-                        {files.length === 1 ? "ダウンロード" : "一括ZIP"}
-                      </span>
-                    </button>
-                    <button
-                      onClick={downloadAllPdf}
-                      disabled={isProcessing}
-                      className="flex items-center space-x-2 bg-orange-700 hover:bg-orange-800 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors shadow-sm"
-                    >
-                      <i data-lucide="file-text" className="w-4 h-4"></i>
-                      <span>PDFで保存</span>
-                    </button>
+                    {targetFormat === "application/pdf" ? (
+                      <button
+                        onClick={downloadAllPdf}
+                        disabled={isProcessing}
+                        className="flex items-center space-x-2 bg-white hover:bg-orange-50 text-orange-600 px-4 py-2 rounded-lg text-sm font-medium transition-colors shadow-sm"
+                      >
+                        <i data-lucide="file-text" className="w-4 h-4"></i>
+                        <span>PDFで保存 (一括)</span>
+                      </button>
+                    ) : (
+                      <button
+                        onClick={
+                          files.length === 1
+                            ? () => downloadFile(files[0])
+                            : downloadAllZip
+                        }
+                        disabled={isProcessing}
+                        className="flex items-center space-x-2 bg-white hover:bg-orange-50 text-orange-600 px-4 py-2 rounded-lg text-sm font-medium transition-colors shadow-sm"
+                      >
+                        <i data-lucide="download" className="w-4 h-4"></i>
+                        <span>
+                          {files.length === 1 ? "ダウンロード" : "一括ZIP"}
+                        </span>
+                      </button>
+                    )}
+
+                    {targetFormat !== "application/pdf" && (
+                      <button
+                        onClick={downloadAllPdf}
+                        disabled={isProcessing}
+                        className="flex items-center space-x-2 bg-orange-700 hover:bg-orange-800 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors shadow-sm"
+                      >
+                        <i data-lucide="file-text" className="w-4 h-4"></i>
+                        <span>PDFで保存</span>
+                      </button>
+                    )}
                   </div>
                 )}
               </div>
@@ -873,7 +895,9 @@
                     className="w-full bg-white border border-orange-200 text-gray-800 text-sm rounded-lg focus:ring-orange-500 focus:border-orange-500 block p-2.5 shadow-sm"
                   >
                     <option value="image/png">PNG (透過・高画質)</option>
+
                     <option value="image/jpeg">JPG (写真・軽量)</option>
+                    <option value="application/pdf">PDF (ドキュメント)</option>
                   </select>
                 </div>
 
