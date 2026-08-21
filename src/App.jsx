@@ -1516,14 +1516,21 @@ const ImageEditor = ({ file, onSave, onClose }) => {
               基本カラー
             </label>
             <div className="flex flex-wrap gap-2">
-              {colors.map((c) => (
+              {[
+                { name: "黒 (墨消し/文字)", hex: "#000000" },
+                { name: "白 (白消し)", hex: "#ffffff" },
+                { name: "赤 (強調/スタンプ)", hex: "#ff0000" },
+                { name: "青 (指示/チェック)", hex: "#0000ff" },
+                { name: "緑 (完了)", hex: "#22c55e" }
+              ].map((c) => (
                 <button
-                  key={c}
-                  onClick={() => setColor(c)}
+                  key={c.hex}
+                  onClick={() => setColor(c.hex)}
+                  title={c.name}
                   className={`w-7 h-7 rounded-full border-2 transition-transform shadow-sm ${
-                    color === c ? "scale-125 border-orange-500 ring-2 ring-orange-500/50" : "border-gray-700"
+                    color === c.hex ? "scale-125 border-orange-500 ring-2 ring-orange-500/50" : "border-gray-700 hover:scale-105"
                   }`}
-                  style={{ backgroundColor: c }}
+                  style={{ backgroundColor: c.hex }}
                 />
               ))}
             </div>
