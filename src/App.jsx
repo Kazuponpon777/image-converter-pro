@@ -1229,9 +1229,9 @@ const ImageEditor = ({ file, onSave, onClose }) => {
       </div>
 
       {/* Editor Body */}
-      <div className="flex-grow flex flex-col md:flex-row overflow-hidden relative">
-        {/* Sidebar Controls */}
-        <div className="w-full md:w-80 bg-gray-900 border-r border-gray-800 p-4 sm:p-5 space-y-5 shrink-0 overflow-y-auto max-h-[40vh] md:max-h-full">
+      <div className="flex-grow flex flex-col md:flex-row overflow-hidden relative min-h-0">
+        {/* Sidebar Controls (完全に固定幅・独立スクロール) */}
+        <div className="w-full md:w-80 bg-gray-900 border-r border-gray-800 p-4 sm:p-5 space-y-5 shrink-0 overflow-y-auto max-h-[40vh] md:max-h-full z-20 shadow-lg">
           {/* Tool Selector */}
           <div className="space-y-2">
             <div className="flex items-center justify-between">
@@ -1337,7 +1337,7 @@ const ImageEditor = ({ file, onSave, onClose }) => {
             </div>
           </div>
 
-          {/* Selected Element Live Editor (DocuWorks-like instant modification) */}
+          {/* Selected Element Live Editor */}
           {selectedElement && tool === "select" && (
             <div className="space-y-3.5 p-3.5 bg-blue-950/40 border border-blue-800/60 rounded-xl animate-fadeIn">
               <div className="flex items-center justify-between border-b border-blue-800/40 pb-2">
@@ -1454,25 +1454,27 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                     </div>
                   )}
 
-                  <div className="flex items-center gap-1.5 pt-1">
-                    <span className="text-xs text-gray-400">色:</span>
-                    {["#000000", "#ffffff", "#ff0000", "#0000ff", "#22c55e"].map((c) => (
-                      <button
-                        key={c}
-                        onClick={() => updateSelectedElement({ color: c })}
-                        className={`w-5 h-5 rounded-full border transition-transform ${
-                          selectedElement.color === c ? "scale-125 ring-2 ring-blue-400" : "border-gray-600"
-                        }`}
-                        style={{ backgroundColor: c }}
-                      />
-                    ))}
+                  <div className="flex items-center justify-between pt-1">
+                    <span className="text-xs text-gray-300">色</span>
+                    <div className="flex items-center gap-1">
+                      {["#000000", "#ffffff", "#ff0000", "#0000ff", "#22c55e"].map((c) => (
+                        <button
+                          key={c}
+                          onClick={() => updateSelectedElement({ color: c })}
+                          className={`w-5 h-5 rounded-full border transition-transform ${
+                            selectedElement.color === c ? "scale-125 ring-2 ring-blue-400" : "border-gray-600"
+                          }`}
+                          style={{ backgroundColor: c }}
+                        />
+                      ))}
+                    </div>
                   </div>
                 </div>
               )}
 
               {/* Stamp specific inspector */}
               {selectedElement.type === "stamp" && (
-                <div className="space-y-3">
+                <div className="space-y-2.5">
                   <div className="space-y-1">
                     <div className="flex justify-between text-xs">
                       <span className="text-gray-300">スタンプサイズ</span>
@@ -1482,65 +1484,60 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                       type="range"
                       min="30"
                       max="250"
-                      value={selectedElement.size || 70}
+                      value={selectedElement.size || 60}
                       onChange={(e) => updateSelectedElement({ size: parseInt(e.target.value) })}
                       className="w-full h-1.5 bg-gray-750 rounded-lg appearance-none cursor-pointer"
                     />
                   </div>
 
-                  <div className="flex items-center gap-1.5 pt-1">
-                    <span className="text-xs text-gray-400">色:</span>
-                    {["#ff0000", "#0000ff", "#008000", "#000000"].map((c) => (
-                      <button
-                        key={c}
-                        onClick={() => updateSelectedElement({ color: c })}
-                        className={`w-5 h-5 rounded-full border transition-transform ${
-                          selectedElement.color === c ? "scale-125 ring-2 ring-blue-400" : "border-gray-600"
-                        }`}
-                        style={{ backgroundColor: c }}
-                      />
-                    ))}
+                  <div className="flex items-center justify-between pt-1">
+                    <span className="text-xs text-gray-300">色</span>
+                    <div className="flex items-center gap-1">
+                      {["#dc2626", "#000000", "#2563eb"].map((c) => (
+                        <button
+                          key={c}
+                          onClick={() => updateSelectedElement({ color: c })}
+                          className={`w-5 h-5 rounded-full border transition-transform ${
+                            selectedElement.color === c ? "scale-125 ring-2 ring-blue-400" : "border-gray-600"
+                          }`}
+                          style={{ backgroundColor: c }}
+                        />
+                      ))}
+                    </div>
                   </div>
                 </div>
               )}
             </div>
           )}
 
-          {/* Color Palette Selector */}
+          {/* Color Palette (Default for new elements) */}
           <div className="space-y-2">
             <label className="text-xs font-bold uppercase tracking-wider text-gray-400">
-              カラー選択
+              基本カラー
             </label>
-            <div className="flex items-center space-x-3">
-              {[
-                { name: "黒 (墨消し/文字)", hex: "#000000" },
-                { name: "白 (白消し)", hex: "#ffffff" },
-                { name: "赤 (強調/スタンプ)", hex: "#ff0000" },
-                { name: "青 (指示/チェック)", hex: "#0000ff" },
-                { name: "緑 (完了)", hex: "#22c55e" }
-              ].map((c) => (
+            <div className="flex flex-wrap gap-2">
+              {colors.map((c) => (
                 <button
-                  key={c.hex}
-                  onClick={() => setColor(c.hex)}
-                  title={c.name}
-                  className={`w-8 h-8 rounded-full border-2 transition-all ${
-                    color === c.hex
-                      ? "border-orange-500 scale-110 ring-2 ring-orange-500/30"
-                      : "border-gray-700 hover:scale-105"
+                  key={c}
+                  onClick={() => setColor(c)}
+                  className={`w-7 h-7 rounded-full border-2 transition-transform shadow-sm ${
+                    color === c ? "scale-125 border-orange-500 ring-2 ring-orange-500/50" : "border-gray-700"
                   }`}
-                  style={{ backgroundColor: c.hex }}
+                  style={{ backgroundColor: c }}
                 />
               ))}
             </div>
           </div>
 
-          {/* Text Tool specific creation settings */}
+          {/* Text Settings (for new text) */}
           {tool === "text" && (
-            <div className="space-y-3.5 p-3.5 bg-gray-850 rounded-xl border border-gray-800 animate-fadeIn">
-              <span className="text-xs font-bold text-orange-400">文字入力の設定</span>
-              <div className="space-y-1.5">
+            <div className="space-y-3 p-3.5 bg-gray-850 rounded-xl border border-gray-800 animate-fadeIn">
+              <label className="text-xs font-bold uppercase tracking-wider text-gray-400">
+                文字入れの初期設定
+              </label>
+              <div className="space-y-1">
                 <div className="flex justify-between text-xs">
-                  <span className="text-gray-300">フォントサイズ</span>
+                  <span className="text-gray-400">フォントサイズ</span>
                   <span className="text-orange-500 font-bold">{fontSize}px</span>
                 </div>
                 <input
@@ -1698,151 +1695,156 @@ const ImageEditor = ({ file, onSave, onClose }) => {
           </div>
         </div>
 
-        {/* Canvas Display & Interaction Area */}
-        <div
-          ref={containerRef}
-          className="flex-grow relative overflow-auto p-4 sm:p-8 flex items-center justify-center bg-gray-950"
-          style={{
-            cursor: isSpacePressed || isPanningRef.current ? "grab" : tool === "hand" ? "grab" : "default"
-          }}
-        >
+        {/* Canvas Display & Interaction Area (右側独立ビューポート) */}
+        <div className="flex-grow h-full relative overflow-hidden flex flex-col min-w-0 bg-gray-950">
           <div
-            ref={canvasWrapperRef}
-            className="relative inline-block shadow-2xl transition-[width,height] duration-75 ease-out"
+            ref={containerRef}
+            className="w-full h-full overflow-auto p-6 sm:p-10 flex"
             style={{
-              width: imgRef.current ? `${imgRef.current.naturalWidth * zoomScale}px` : "auto",
-              height: imgRef.current ? `${imgRef.current.naturalHeight * zoomScale}px` : "auto"
+              cursor: isSpacePressed || isPanningRef.current ? "grab" : tool === "hand" ? "grab" : "default"
             }}
           >
-            <canvas
-              ref={canvasRef}
-              onMouseDown={(e) => handleStart(e.clientX, e.clientY, e.button)}
-              onMouseMove={(e) => handleMove(e.clientX, e.clientY)}
-              onMouseUp={handleEnd}
-              onMouseLeave={handleEnd}
-              onDoubleClick={handleDoubleClick}
-              onTouchStart={(e) => {
-                if (e.touches.length > 0) handleStart(e.touches[0].clientX, e.touches[0].clientY, 0);
-              }}
-              onTouchMove={(e) => {
-                if (e.touches.length > 0) handleMove(e.touches[0].clientX, e.touches[0].clientY);
-              }}
-              onTouchEnd={handleEnd}
-              className={`w-full h-full block bg-white border border-gray-800 ${
-                isSpacePressed || tool === "hand"
-                  ? "cursor-grab"
-                  : tool === "select"
-                    ? "cursor-default"
-                    : tool === "text"
-                      ? "cursor-text"
-                      : "cursor-crosshair"
-              }`}
-            />
-
-            {/* Inline Text Input Overlay (DocuWorks-like direct on-canvas WYSIWYG editing) */}
-            {editingTextState && canvasRef.current && (
+            {/* 中央揃えラッパー（画像拡大時にスクロール可能領域を正しく展開） */}
+            <div className="m-auto flex items-center justify-center shrink-0">
               <div
-                className="absolute z-30 flex flex-col bg-white text-gray-900 border-2 border-orange-500 p-3 rounded-xl shadow-2xl animate-fadeIn ring-4 ring-black/20"
+                ref={canvasWrapperRef}
+                className="relative shadow-2xl transition-[width,height] duration-75 ease-out"
                 style={{
-                  left: `${(editingTextState.canvasX / canvasRef.current.width) * 100}%`,
-                  top: `${(editingTextState.canvasY / canvasRef.current.height) * 100}%`,
-                  minWidth: "260px",
-                  maxWidth: "90vw",
-                  transform: "translate(-10px, -10px)"
+                  width: imgRef.current ? `${imgRef.current.naturalWidth * zoomScale}px` : "auto",
+                  height: imgRef.current ? `${imgRef.current.naturalHeight * zoomScale}px` : "auto"
                 }}
               >
-                <div className="flex items-center justify-between mb-2 pb-1.5 border-b border-gray-200">
-                  <span className="text-xs font-bold text-gray-800 flex items-center gap-1.5">
-                    <Edit3 className="w-3.5 h-3.5 text-orange-500" />
-                    {editingTextState.id ? "文字を再編集" : "文字を入力"}
-                  </span>
-                  <div className="flex items-center space-x-2">
-                    <span className="text-[11px] text-gray-500 font-mono font-semibold">
-                      {editingTextState.fontSize}px
-                    </span>
-                    <button
-                      onClick={() =>
-                        setEditingTextState((prev) => ({
-                          ...prev,
-                          useBg: !prev.useBg
-                        }))
-                      }
-                      title="背景座布団の切り替え"
-                      className={`text-[11px] px-2 py-0.5 rounded border transition-colors font-medium ${
-                        editingTextState.useBg
-                          ? "bg-orange-600 border-orange-500 text-white shadow-sm"
-                          : "bg-gray-100 border-gray-300 text-gray-600 hover:bg-gray-200"
-                      }`}
-                    >
-                      座布団
-                    </button>
-                  </div>
-                </div>
-
-                <textarea
-                  ref={textInputRef}
-                  rows={Math.max(2, (editingTextState.text || "").split("\n").length)}
-                  value={editingTextState.text}
-                  onChange={(e) =>
-                    setEditingTextState((prev) => ({
-                      ...prev,
-                      text: e.target.value
-                    }))
-                  }
-                  onKeyDown={(e) => {
-                    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
-                      e.preventDefault();
-                      submitText();
-                    }
-                    if (e.key === "Escape") {
-                      e.preventDefault();
-                      setEditingTextState(null);
-                    }
+                <canvas
+                  ref={canvasRef}
+                  onMouseDown={(e) => handleStart(e.clientX, e.clientY, e.button)}
+                  onMouseMove={(e) => handleMove(e.clientX, e.clientY)}
+                  onMouseUp={handleEnd}
+                  onMouseLeave={handleEnd}
+                  onDoubleClick={handleDoubleClick}
+                  onTouchStart={(e) => {
+                    if (e.touches.length > 0) handleStart(e.touches[0].clientX, e.touches[0].clientY, 0);
                   }}
-                  placeholder="テキストを入力 (Shift+Enterで改行)"
-                  className="w-full bg-white text-gray-900 border border-gray-300 rounded-lg p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-orange-400 focus:border-orange-500 resize-none font-sans leading-relaxed shadow-inner placeholder-gray-400"
+                  onTouchMove={(e) => {
+                    if (e.touches.length > 0) handleMove(e.touches[0].clientX, e.touches[0].clientY);
+                  }}
+                  onTouchEnd={handleEnd}
+                  className={`w-full h-full block bg-white border border-gray-800 ${
+                    isSpacePressed || tool === "hand"
+                      ? "cursor-grab"
+                      : tool === "select"
+                        ? "cursor-default"
+                        : tool === "text"
+                          ? "cursor-text"
+                          : "cursor-crosshair"
+                  }`}
                 />
 
-                <div className="flex items-center justify-between mt-2.5 pt-2 border-t border-gray-200">
-                  <div className="flex items-center space-x-1.5">
-                    {["#000000", "#ff0000", "#0000ff", "#22c55e", "#ffffff"].map((c) => (
-                      <button
-                        key={c}
-                        onClick={() =>
-                          setEditingTextState((prev) => ({ ...prev, color: c }))
-                        }
-                        title={c === "#000000" ? "黒" : c === "#ff0000" ? "赤" : c === "#0000ff" ? "青" : c === "#22c55e" ? "緑" : "白"}
-                        className={`w-5 h-5 rounded-full border transition-all ${
-                          editingTextState.color === c
-                            ? "scale-125 ring-2 ring-orange-500 border-white shadow-sm"
-                            : "border-gray-300 hover:scale-110"
-                        }`}
-                        style={{ backgroundColor: c }}
-                      />
-                    ))}
-                  </div>
+                {/* Inline Text Input Overlay (DocuWorks-like direct on-canvas WYSIWYG editing) */}
+                {editingTextState && canvasRef.current && (
+                  <div
+                    className="absolute z-30 flex flex-col bg-white text-gray-900 border-2 border-orange-500 p-3 rounded-xl shadow-2xl animate-fadeIn ring-4 ring-black/20"
+                    style={{
+                      left: `${(editingTextState.canvasX / canvasRef.current.width) * 100}%`,
+                      top: `${(editingTextState.canvasY / canvasRef.current.height) * 100}%`,
+                      minWidth: "260px",
+                      maxWidth: "90vw",
+                      transform: "translate(-10px, -10px)"
+                    }}
+                  >
+                    <div className="flex items-center justify-between mb-2 pb-1.5 border-b border-gray-200">
+                      <span className="text-xs font-bold text-gray-800 flex items-center gap-1.5">
+                        <Edit3 className="w-3.5 h-3.5 text-orange-500" />
+                        {editingTextState.id ? "文字を再編集" : "文字を入力"}
+                      </span>
+                      <div className="flex items-center space-x-2">
+                        <span className="text-[11px] text-gray-500 font-mono font-semibold">
+                          {editingTextState.fontSize}px
+                        </span>
+                        <button
+                          onClick={() =>
+                            setEditingTextState((prev) => ({
+                              ...prev,
+                              useBg: !prev.useBg
+                            }))
+                          }
+                          title="背景座布団の切り替え"
+                          className={`text-[11px] px-2 py-0.5 rounded border transition-colors font-medium ${
+                            editingTextState.useBg
+                              ? "bg-orange-600 border-orange-500 text-white shadow-sm"
+                              : "bg-gray-100 border-gray-300 text-gray-600 hover:bg-gray-200"
+                          }`}
+                        >
+                          座布団
+                        </button>
+                      </div>
+                    </div>
 
-                  <div className="flex space-x-1.5">
-                    <button
-                      onClick={() => setEditingTextState(null)}
-                      className="px-2.5 py-1 bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-medium rounded-lg transition-colors border border-gray-300"
-                    >
-                      キャンセル
-                    </button>
-                    <button
-                      onClick={submitText}
-                      className="px-3.5 py-1 bg-orange-600 hover:bg-orange-500 text-white text-xs font-bold rounded-lg transition-all shadow-md shadow-orange-600/30 active:scale-95"
-                    >
-                      確定
-                    </button>
+                    <textarea
+                      ref={textInputRef}
+                      rows={Math.max(2, (editingTextState.text || "").split("\n").length)}
+                      value={editingTextState.text}
+                      onChange={(e) =>
+                        setEditingTextState((prev) => ({
+                          ...prev,
+                          text: e.target.value
+                        }))
+                      }
+                      onKeyDown={(e) => {
+                        if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+                          e.preventDefault();
+                          submitText();
+                        }
+                        if (e.key === "Escape") {
+                          e.preventDefault();
+                          setEditingTextState(null);
+                        }
+                      }}
+                      placeholder="テキストを入力 (Shift+Enterで改行)"
+                      className="w-full bg-white text-gray-900 border border-gray-300 rounded-lg p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-orange-400 focus:border-orange-500 resize-none font-sans leading-relaxed shadow-inner placeholder-gray-400"
+                    />
+
+                    <div className="flex items-center justify-between mt-2.5 pt-2 border-t border-gray-200">
+                      <div className="flex items-center space-x-1.5">
+                        {["#000000", "#ff0000", "#0000ff", "#22c55e", "#ffffff"].map((c) => (
+                          <button
+                            key={c}
+                            onClick={() =>
+                              setEditingTextState((prev) => ({ ...prev, color: c }))
+                            }
+                            title={c === "#000000" ? "黒" : c === "#ff0000" ? "赤" : c === "#0000ff" ? "青" : c === "#22c55e" ? "緑" : "白"}
+                            className={`w-5 h-5 rounded-full border transition-all ${
+                              editingTextState.color === c
+                                ? "scale-125 ring-2 ring-orange-500 border-white shadow-sm"
+                                : "border-gray-300 hover:scale-110"
+                            }`}
+                            style={{ backgroundColor: c }}
+                          />
+                        ))}
+                      </div>
+
+                      <div className="flex space-x-1.5">
+                        <button
+                          onClick={() => setEditingTextState(null)}
+                          className="px-2.5 py-1 bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-medium rounded-lg transition-colors border border-gray-300"
+                        >
+                          キャンセル
+                        </button>
+                        <button
+                          onClick={submitText}
+                          className="px-3.5 py-1 bg-orange-600 hover:bg-orange-500 text-white text-xs font-bold rounded-lg transition-all shadow-md shadow-orange-600/30 active:scale-95"
+                        >
+                          確定
+                        </button>
+                      </div>
+                    </div>
                   </div>
-                </div>
+                )}
               </div>
-            )}
+            </div>
           </div>
 
-          {/* Floating Zoom Toolbar at bottom center */}
-          <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-40 bg-gray-900/90 backdrop-blur-md border border-gray-700/80 rounded-full px-4 py-2 flex items-center space-x-3 shadow-2xl">
+          {/* Floating Zoom Toolbar (キャンバス画面下部に完全固定) */}
+          <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-40 bg-gray-900/90 backdrop-blur-md border border-gray-700/80 rounded-full px-4 py-2 flex items-center space-x-3 shadow-2xl pointer-events-auto">
             <button
               onClick={handleZoomOut}
               title="縮小 (Zoom Out)"
