@@ -1,9 +1,30 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import * as pdfjsLib from "pdfjs-dist";
 import { jsPDF } from "jspdf";
 import JSZip from "jszip";
 import { saveAs } from "file-saver";
 import heic2any from "heic2any";
+import html2canvas from "html2canvas";
+import "pdfjs-dist/web/pdf_viewer.css";
+import { renderAsync as renderDocxAsync } from "docx-preview";
+import * as XLSX from "xlsx";
+import {
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  TouchSensor,
+  closestCenter,
+  useSensor,
+  useSensors
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  arrayMove,
+  rectSortingStrategy,
+  sortableKeyboardCoordinates,
+  useSortable
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import {
   ArrowRight,
   RotateCcw,
@@ -26,7 +47,18 @@ import {
   Paintbrush,
   MousePointer,
   Square,
-  Circle
+  Circle,
+  GripVertical,
+  AlertTriangle,
+  Eye,
+  EyeOff,
+  ZoomIn,
+  ZoomOut,
+  Maximize2,
+  Hand,
+  Edit3,
+  Sliders,
+  Move
 } from "lucide-react";
 
 import pdfjsWorker from "pdfjs-dist/build/pdf.worker.min.mjs?url";
@@ -34,22 +66,224 @@ import pdfjsWorker from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 // PDF.js Worker Configuration
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
+const MAX_PDF_CANVAS_PIXELS = 12_000_000;
+const MAX_PDF_CANVAS_SIDE = 8192;
+const LARGE_PDF_FILE_BYTES = 50 * 1024 * 1024;
+const LARGE_PDF_PAGE_COUNT = 100;
+const PDFJS_ASSET_BASE = new URL("pdfjs/", document.baseURI).href;
+const PDFJS_DOCUMENT_OPTIONS = {
+  cMapUrl: `${PDFJS_ASSET_BASE}cmaps/`,
+  cMapPacked: true,
+  iccUrl: `${PDFJS_ASSET_BASE}iccs/`,
+  standardFontDataUrl: `${PDFJS_ASSET_BASE}standard_fonts/`,
+  wasmUrl: `${PDFJS_ASSET_BASE}wasm/`,
+  enableXfa: true,
+  useSystemFonts: true,
+  stopAtErrors: false
+};
+
+class ProcessingCancelledError extends Error {
+  constructor() {
+    super("処理をキャンセルしました");
+    this.name = "ProcessingCancelledError";
+  }
+}
+
+const generateId = () => crypto.randomUUID();
+
+const canvasHasVisibleContent = (canvas) => {
+  const sample = document.createElement("canvas");
+  sample.width = 64;
+  sample.height = 64;
+  const context = sample.getContext("2d", { willReadFrequently: true });
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, sample.width, sample.height);
+  context.drawImage(canvas, 0, 0, sample.width, sample.height);
+
+  const pixels = context.getImageData(0, 0, sample.width, sample.height).data;
+  let visiblePixels = 0;
+  for (let i = 0; i < pixels.length; i += 4) {
+    if (pixels[i] < 248 || pixels[i + 1] < 248 || pixels[i + 2] < 248) {
+      visiblePixels += 1;
+    }
+  }
+  return visiblePixels >= 4;
+};
+
+const renderPdfPageWithFallback = async (page, shouldCancel) => {
+  const attempts = [
+    { scale: 2, intent: "display" },
+    { scale: 1.25, intent: "display" },
+    { scale: 1, intent: "print" }
+  ];
+  const baseViewport = page.getViewport({ scale: 1 });
+  let lastCanvas = null;
+  let lastError = null;
+
+  for (const attempt of attempts) {
+    if (shouldCancel()) throw new ProcessingCancelledError();
+    const pixelScale = Math.sqrt(
+      MAX_PDF_CANVAS_PIXELS / (baseViewport.width * baseViewport.height)
+    );
+    const sideScale = Math.min(
+      MAX_PDF_CANVAS_SIDE / baseViewport.width,
+      MAX_PDF_CANVAS_SIDE / baseViewport.height
+    );
+    const safeScale = Math.max(0.25, Math.min(attempt.scale, pixelScale, sideScale));
+    const viewport = page.getViewport({ scale: safeScale });
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.ceil(viewport.width));
+    canvas.height = Math.max(1, Math.ceil(viewport.height));
+
+    try {
+      const renderTask = page.render({
+        canvas,
+        viewport,
+        intent: attempt.intent,
+        background: "#ffffff"
+      });
+      renderTask.onContinue = (continueRendering) => {
+        if (shouldCancel()) {
+          renderTask.cancel();
+        } else {
+          continueRendering();
+        }
+      };
+      await renderTask.promise;
+      lastCanvas = canvas;
+      if (canvasHasVisibleContent(canvas)) {
+        return { canvas, warning: null };
+      }
+      lastError = new Error("描画結果が白紙と判定されました");
+    } catch (error) {
+      if (shouldCancel()) throw new ProcessingCancelledError();
+      lastError = error;
+    }
+  }
+
+  if (lastCanvas) {
+    return {
+      canvas: lastCanvas,
+      warning: "白紙の可能性があります。元のPDFも確認してください。"
+    };
+  }
+  throw lastError || new Error("PDFページを描画できませんでした");
+};
+
+const renderXfaPage = async (page, shouldCancel) => {
+  if (shouldCancel()) throw new ProcessingCancelledError();
+  const xfaHtml = await page.getXfa();
+  if (!xfaHtml) throw new Error("XFAフォームの内容を取得できませんでした");
+
+  const baseViewport = pdfjsLib.XfaLayer.getPageViewport(xfaHtml, { scale: 1 });
+  const pixelScale = Math.sqrt(
+    MAX_PDF_CANVAS_PIXELS / (baseViewport.width * baseViewport.height)
+  );
+  const sideScale = Math.min(
+    MAX_PDF_CANVAS_SIDE / baseViewport.width,
+    MAX_PDF_CANVAS_SIDE / baseViewport.height
+  );
+  const scale = Math.max(0.25, Math.min(2, pixelScale, sideScale));
+  const viewport = pdfjsLib.XfaLayer.getPageViewport(xfaHtml, { scale });
+  const container = document.createElement("div");
+  container.className = "xfaLayer";
+  Object.assign(container.style, {
+    position: "fixed",
+    left: "-100000px",
+    top: "0",
+    width: `${viewport.width}px`,
+    height: `${viewport.height}px`,
+    background: "#ffffff"
+  });
+  document.body.appendChild(container);
+
+  try {
+    pdfjsLib.XfaLayer.render({
+      xfaHtml,
+      div: container,
+      viewport: viewport.clone({ dontFlip: true }),
+      intent: "print",
+      linkService: { addLinkAttributes() {} }
+    });
+    await document.fonts.ready;
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    if (shouldCancel()) throw new ProcessingCancelledError();
+
+    const canvas = await html2canvas(container, {
+      backgroundColor: "#ffffff",
+      logging: false,
+      width: Math.ceil(viewport.width),
+      height: Math.ceil(viewport.height),
+      scale: 1
+    });
+    return {
+      canvas,
+      warning: canvasHasVisibleContent(canvas)
+        ? null
+        : "XFAフォームの描画結果が白紙の可能性があります。"
+    };
+  } finally {
+    container.remove();
+  }
+};
+
+const SortableFileCard = ({ id, children }) => {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging
+  } = useSortable({ id });
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={{ transform: CSS.Transform.toString(transform), transition }}
+      className={`group relative bg-white rounded-xl overflow-hidden border transition-[transform,box-shadow,border-color,opacity] shadow-lg flex flex-col animate-fadeIn ${
+        isDragging
+          ? "z-50 border-orange-500 opacity-80 shadow-2xl ring-2 ring-orange-300"
+          : "border-orange-200 hover:border-orange-500/50 hover:shadow-xl hover:shadow-orange-500/10"
+      }`}
+    >
+      {children({ attributes, listeners, isDragging })}
+    </div>
+  );
+};
+
 // Image Editor Component
 const ImageEditor = ({ file, onSave, onClose }) => {
   const canvasRef = useRef(null);
-  const [tool, setTool] = useState("select"); // "select" | "brush" | "rect" | "circle" | "text"
-  const [color, setColor] = useState("#000000"); // Black by default
+  const containerRef = useRef(null);
+  const canvasWrapperRef = useRef(null);
+
+  // Tools: "select" | "hand" | "brush" | "rect" | "circle" | "text" | "stamp"
+  const [tool, setTool] = useState("select");
+  const [color, setColor] = useState("#000000");
   const [brushSize, setBrushSize] = useState(25);
   const [fontSize, setFontSize] = useState(40);
   const [useTextBg, setUseTextBg] = useState(true);
   const [shapeStyle, setShapeStyle] = useState("fill"); // "fill" | "stroke"
-  
+  const [stampType, setStampType] = useState("approved");
+  const [stampText, setStampText] = useState("佐藤");
+  const [stampColor, setStampColor] = useState("#ff0000");
+  const [stampSize, setStampSize] = useState(70);
+
+  // Zoom & Pan states
+  const [zoomScale, setZoomScale] = useState(1);
+  const [isFitMode, setIsFitMode] = useState(true);
+  const [isSpacePressed, setIsSpacePressed] = useState(false);
+  const isPanningRef = useRef(false);
+  const panStartRef = useRef({ x: 0, y: 0, scrollLeft: 0, scrollTop: 0 });
+
+  // Elements & History
   const [elements, setElements] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [history, setHistory] = useState([]);
-  
-  const [textInput, setTextInput] = useState("");
-  const [textPos, setTextPos] = useState(null);
+
+  // Text Inline Editing state: { id?: string, text: string, canvasX: number, canvasY: number, fontSize: number, color: string, useBg: boolean }
+  const [editingTextState, setEditingTextState] = useState(null);
   const textInputRef = useRef(null);
 
   const imgRef = useRef(null);
@@ -59,11 +293,23 @@ const ImageEditor = ({ file, onSave, onClose }) => {
   const isMouseDown = useRef(false);
   const isDraggingElement = useRef(false);
   const dragStartPos = useRef({ x: 0, y: 0 });
-  const elementStartPos = useRef(null); // original pos of the moving element
+  const elementStartPos = useRef(null);
 
   // Shape drawing states
   const isDrawingShape = useRef(false);
   const activeShapeId = useRef(null);
+
+  // Calculate Fit Zoom Scale
+  const calculateFitScale = () => {
+    if (!containerRef.current || !imgRef.current) return 1;
+    const container = containerRef.current;
+    const padding = 64;
+    const availWidth = Math.max(100, container.clientWidth - padding);
+    const availHeight = Math.max(100, container.clientHeight - padding);
+    const scaleX = availWidth / imgRef.current.naturalWidth;
+    const scaleY = availHeight / imgRef.current.naturalHeight;
+    return Math.min(scaleX, scaleY, 1.0);
+  };
 
   // Initialize background image
   useEffect(() => {
@@ -76,25 +322,152 @@ const ImageEditor = ({ file, onSave, onClose }) => {
       if (canvas) {
         canvas.width = img.naturalWidth;
         canvas.height = img.naturalHeight;
-        drawAll();
       }
+      if (isFitMode) {
+        const fit = calculateFitScale();
+        setZoomScale(fit);
+      }
+      drawAll();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [file]);
 
-  // Focus text input
+  // Window resize handler for fit mode
   useEffect(() => {
-    if (textPos && textInputRef.current) {
-      textInputRef.current.focus();
-    }
-  }, [textPos]);
+    const handleResize = () => {
+      if (isFitMode && isLoaded.current) {
+        const fit = calculateFitScale();
+        setZoomScale(fit);
+      }
+    };
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, [isFitMode]);
 
-  // Redraw when elements or selection changes
+  // Focus inline text area when editing text starts
+  useEffect(() => {
+    if (editingTextState && textInputRef.current) {
+      textInputRef.current.focus();
+      // Select all or move cursor to end
+      const len = textInputRef.current.value.length;
+      textInputRef.current.setSelectionRange(len, len);
+    }
+  }, [editingTextState]);
+
+  // Redraw when elements, selection, or tool changes
   useEffect(() => {
     if (isLoaded.current) {
       drawAll();
     }
-  }, [elements, selectedId, tool]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [elements, selectedId, tool, editingTextState]);
 
+  // Keyboard Shortcuts (Space for Pan, Delete/Backspace for removal, Undo, Esc)
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      // Don't capture when typing in inputs/textareas
+      if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") {
+        if (e.key === "Escape" && editingTextState) {
+          setEditingTextState(null);
+        }
+        return;
+      }
+
+      if (e.code === "Space" && !isSpacePressed) {
+        e.preventDefault();
+        setIsSpacePressed(true);
+      } else if (e.key === "Delete" || e.key === "Backspace") {
+        if (selectedId) {
+          e.preventDefault();
+          deleteSelectedElement();
+        }
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        handleUndo();
+      } else if (e.key === "Escape") {
+        setSelectedId(null);
+        setEditingTextState(null);
+      } else if (selectedId && ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)) {
+        e.preventDefault();
+        const step = e.shiftKey ? 10 : 1;
+        const dx = e.key === "ArrowLeft" ? -step : e.key === "ArrowRight" ? step : 0;
+        const dy = e.key === "ArrowUp" ? -step : e.key === "ArrowDown" ? step : 0;
+        moveSelectedElementBy(dx, dy);
+      }
+    };
+
+    const handleKeyUp = (e) => {
+      if (e.code === "Space") {
+        setIsSpacePressed(false);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("keyup", handleKeyUp);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keyup", handleKeyUp);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId, editingTextState, isSpacePressed, history, elements]);
+
+  // Non-passive wheel listener for smooth zooming centered on mouse
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const handleWheel = (e) => {
+      if (e.ctrlKey || e.metaKey || e.altKey) {
+        e.preventDefault();
+        const zoomDelta = e.deltaY < 0 ? 1.15 : 0.87;
+        applyZoom(zoomDelta, e.clientX, e.clientY);
+      }
+    };
+
+    container.addEventListener("wheel", handleWheel, { passive: false });
+    return () => container.removeEventListener("wheel", handleWheel);
+  }, [zoomScale]);
+
+  // Apply zoom with focal point preserved
+  const applyZoom = (factor, clientX, clientY) => {
+    setIsFitMode(false);
+    const container = containerRef.current;
+    if (!container) return;
+
+    const rect = container.getBoundingClientRect();
+    const focalX = clientX !== undefined ? clientX - rect.left : rect.width / 2;
+    const focalY = clientY !== undefined ? clientY - rect.top : rect.height / 2;
+
+    const currentScale = zoomScale;
+    const nextScale = Math.max(0.15, Math.min(currentScale * factor, 6.0));
+
+    // Adjust scroll so focal point remains stationary
+    const ratio = nextScale / currentScale;
+    const newScrollLeft = (container.scrollLeft + focalX) * ratio - focalX;
+    const newScrollTop = (container.scrollTop + focalY) * ratio - focalY;
+
+    setZoomScale(nextScale);
+    requestAnimationFrame(() => {
+      if (container) {
+        container.scrollLeft = newScrollLeft;
+        container.scrollTop = newScrollTop;
+      }
+    });
+  };
+
+  const handleZoomIn = () => applyZoom(1.25);
+  const handleZoomOut = () => applyZoom(0.8);
+  const handleZoom100 = () => {
+    setIsFitMode(false);
+    setZoomScale(1.0);
+  };
+  const handleFitScreen = () => {
+    setIsFitMode(true);
+    const fit = calculateFitScale();
+    setZoomScale(fit);
+  };
+
+  // Convert browser client coordinates to original Canvas pixel coordinates
   const getCanvasCoords = (clientX, clientY) => {
     const canvas = canvasRef.current;
     if (!canvas) return { x: 0, y: 0 };
@@ -107,17 +480,67 @@ const ImageEditor = ({ file, onSave, onClose }) => {
     };
   };
 
+  // Helper to measure text multiline block dimensions
+  const getTextMetrics = (ctx, el) => {
+    const lines = String(el.text || "").split("\n");
+    const fontSize = el.fontSize || 30;
+    const lineHeight = fontSize * 1.3;
+    const p = fontSize * 0.25;
+
+    ctx.font = `bold ${fontSize}px "Inter", "Noto Sans JP", -apple-system, sans-serif`;
+    let maxWidth = 0;
+    lines.forEach((line) => {
+      const w = ctx.measureText(line).width;
+      if (w > maxWidth) maxWidth = w;
+    });
+    const totalHeight = Math.max(lines.length * lineHeight, fontSize);
+    return { lines, fontSize, lineHeight, p, maxWidth, totalHeight };
+  };
+
+  // Draw text element supporting multiline & za-buton (background fill)
+  const drawTextElement = (ctx, el) => {
+    const { lines, fontSize, lineHeight, p, maxWidth, totalHeight } = getTextMetrics(ctx, el);
+
+    ctx.font = `bold ${fontSize}px "Inter", "Noto Sans JP", -apple-system, sans-serif`;
+    ctx.textBaseline = "top";
+
+    if (el.useBg) {
+      ctx.fillStyle = el.bgColor || (el.color === "#ffffff" ? "#111827" : "#ffffff");
+      if (ctx.roundRect) {
+        ctx.beginPath();
+        ctx.roundRect(el.x - p, el.y - p, maxWidth + p * 2, totalHeight + p * 2, 4);
+        ctx.fill();
+        ctx.strokeStyle = el.color === "#ffffff" ? "#374151" : "#d1d5db";
+        ctx.lineWidth = Math.max(1, fontSize * 0.03);
+        ctx.stroke();
+      } else {
+        ctx.fillRect(el.x - p, el.y - p, maxWidth + p * 2, totalHeight + p * 2);
+      }
+    }
+
+    ctx.fillStyle = el.color;
+    lines.forEach((line, idx) => {
+      ctx.fillText(line, el.x, el.y + idx * lineHeight + p * 0.15);
+    });
+  };
+
+  // Main Canvas drawing routine
   const drawAll = () => {
     const canvas = canvasRef.current;
     if (!canvas || !imgRef.current) return;
     const ctx = canvas.getContext("2d");
-    
-    // Clear and draw background
+
+    // Clear and draw original image
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(imgRef.current, 0, 0);
 
-    // Draw all elements
+    // Draw elements
     elements.forEach((el) => {
+      // If element is currently being edited in inline text overlay, hide or render lightly
+      if (editingTextState && editingTextState.id === el.id) {
+        return;
+      }
+
       ctx.save();
       if (el.type === "brush") {
         if (el.points.length >= 2) {
@@ -153,39 +576,107 @@ const ImageEditor = ({ file, onSave, onClose }) => {
           ctx.fill();
         }
       } else if (el.type === "text") {
-        ctx.font = `bold ${el.fontSize}px "Inter", "Noto Sans JP", sans-serif`;
-        ctx.textBaseline = "middle";
-        const w = ctx.measureText(el.text).width;
-        const p = el.fontSize * 0.2;
-
-        if (el.useBg) {
-          ctx.fillStyle = el.color === "#ffffff" ? "#000000" : "#ffffff";
-          ctx.fillRect(
-            el.x - p,
-            el.y - el.fontSize / 2 - p,
-            w + p * 2,
-            el.fontSize + p * 2
-          );
-        }
+        drawTextElement(ctx, el);
+      } else if (el.type === "stamp") {
+        ctx.save();
+        ctx.translate(el.x, el.y);
+        ctx.strokeStyle = el.color;
         ctx.fillStyle = el.color;
-        ctx.fillText(el.text, el.x, el.y);
+
+        if (el.stampType === "approved" || el.stampType === "confidential" || el.stampType === "urgent") {
+          const w = el.size * 1.5;
+          const h = el.size * 0.7;
+          ctx.lineWidth = Math.max(3, w * 0.05);
+
+          ctx.beginPath();
+          if (ctx.roundRect) {
+            ctx.roundRect(-w / 2, -h / 2, w, h, w * 0.1);
+          } else {
+            ctx.rect(-w / 2, -h / 2, w, h);
+          }
+          ctx.stroke();
+
+          ctx.font = `bold ${h * 0.6}px "Meiryo", "MS Gothic", sans-serif`;
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText(el.text, 0, 0);
+        } else if (el.stampType === "done") {
+          const r = el.size * 0.45;
+          ctx.lineWidth = Math.max(3, r * 0.08);
+          ctx.beginPath();
+          ctx.arc(0, 0, r, 0, Math.PI * 2);
+          ctx.stroke();
+
+          ctx.font = `bold ${r * 1.1}px "Meiryo", "MS Gothic", sans-serif`;
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText(el.text, 0, 0);
+        } else if (el.stampType === "circle_name") {
+          const r = el.size * 0.5;
+          ctx.lineWidth = Math.max(2, r * 0.06);
+          ctx.beginPath();
+          ctx.arc(0, 0, r, 0, Math.PI * 2);
+          ctx.stroke();
+
+          const txt = el.text || "";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+
+          if (txt.length === 1) {
+            ctx.font = `bold ${r * 1.2}px "MS Mincho", "Noto Serif JP", serif`;
+            ctx.fillText(txt, 0, 0);
+          } else if (txt.length === 2) {
+            ctx.font = `bold ${r * 0.9}px "MS Mincho", "Noto Serif JP", serif`;
+            ctx.fillText(txt[0], 0, -r * 0.35);
+            ctx.fillText(txt[1], 0, r * 0.35);
+          } else if (txt.length === 3) {
+            ctx.font = `bold ${r * 0.6}px "MS Mincho", "Noto Serif JP", serif`;
+            ctx.fillText(txt[0], 0, -r * 0.5);
+            ctx.fillText(txt[1], 0, 0);
+            ctx.fillText(txt[2], 0, r * 0.5);
+          } else {
+            ctx.font = `bold ${r * 0.5}px "MS Mincho", "Noto Serif JP", serif`;
+            ctx.fillText(txt.slice(0, 2), 0, -r * 0.3);
+            ctx.fillText(txt.slice(2), 0, r * 0.3);
+          }
+        } else if (el.stampType === "square_name") {
+          const w = el.size;
+          ctx.lineWidth = Math.max(3, w * 0.05);
+          ctx.strokeRect(-w / 2, -w / 2, w, w);
+
+          const txt = el.text || "";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+
+          if (txt.length <= 4) {
+            ctx.font = `bold ${w * 0.32}px "MS Mincho", "Noto Serif JP", serif`;
+            const t1 = txt.substring(0, 2);
+            const t2 = txt.substring(2);
+            ctx.fillText(t1, w * 0.2, -w * 0.2);
+            ctx.fillText(t2, -w * 0.2, w * 0.2);
+          } else {
+            ctx.font = `bold ${w * 0.25}px "MS Mincho", "Noto Serif JP", serif`;
+            const mid = Math.ceil(txt.length / 2);
+            ctx.fillText(txt.slice(0, mid), w * 0.22, 0);
+            ctx.fillText(txt.slice(mid), -w * 0.22, 0);
+          }
+        }
+        ctx.restore();
       }
 
-      // Selection indicator (draw dashed border around selected element)
-      if (selectedId === el.id && tool === "select") {
-        ctx.strokeStyle = "#3b82f6";
-        ctx.lineWidth = Math.max(3, canvas.width * 0.002);
-        ctx.setLineDash([6, 6]);
-        
+      // Selection bounding box indicator
+      if (selectedId === el.id && (tool === "select" || !tool)) {
+        ctx.strokeStyle = "#2563eb";
+        ctx.lineWidth = Math.max(2, Math.min(6, canvas.width * 0.0025));
+        ctx.setLineDash([8, 6]);
+
         if (el.type === "text") {
-          ctx.font = `bold ${el.fontSize}px "Inter", "Noto Sans JP", sans-serif`;
-          const w = ctx.measureText(el.text).width;
-          const p = el.fontSize * 0.2;
+          const { p, maxWidth, totalHeight } = getTextMetrics(ctx, el);
           ctx.strokeRect(
-            el.x - p - 4,
-            el.y - el.fontSize / 2 - p - 4,
-            w + p * 2 + 8,
-            el.fontSize + p * 2 + 8
+            el.x - p - 6,
+            el.y - p - 6,
+            maxWidth + p * 2 + 12,
+            totalHeight + p * 2 + 12
           );
         } else if (el.type === "rect") {
           const padding = 6;
@@ -206,34 +697,36 @@ const ImageEditor = ({ file, onSave, onClose }) => {
         } else if (el.type === "brush") {
           const xs = el.points.map((p) => p.x);
           const ys = el.points.map((p) => p.y);
-          const xMin = Math.min(...xs) - el.brushSize / 2 - 4;
-          const xMax = Math.max(...xs) + el.brushSize / 2 + 4;
-          const yMin = Math.min(...ys) - el.brushSize / 2 - 4;
-          const yMax = Math.max(...ys) + el.brushSize / 2 + 4;
+          const xMin = Math.min(...xs) - el.brushSize / 2 - 6;
+          const xMax = Math.max(...xs) + el.brushSize / 2 + 6;
+          const yMin = Math.min(...ys) - el.brushSize / 2 - 6;
+          const yMax = Math.max(...ys) + el.brushSize / 2 + 6;
           ctx.strokeRect(xMin, yMin, xMax - xMin, yMax - yMin);
+        } else if (el.type === "stamp") {
+          const w = el.stampType.includes("square") || el.stampType === "circle_name" ? el.size : el.size * 1.5;
+          const h = el.size * 0.8;
+          ctx.strokeRect(el.x - w / 2 - 8, el.y - h / 2 - 8, w + 16, h + 16);
         }
       }
       ctx.restore();
     });
   };
 
+  // Hit testing for selection & double-click
   const detectHitElement = (canvasPos) => {
     const canvas = canvasRef.current;
     if (!canvas) return null;
     const ctx = canvas.getContext("2d");
 
-    // Hit test from top (last drawn element first)
     for (let i = elements.length - 1; i >= 0; i--) {
       const el = elements[i];
       if (el.type === "text") {
-        ctx.font = `bold ${el.fontSize}px "Inter", "Noto Sans JP", sans-serif`;
-        const w = ctx.measureText(el.text).width;
-        const p = el.fontSize * 0.2;
+        const { p, maxWidth, totalHeight } = getTextMetrics(ctx, el);
         if (
-          canvasPos.x >= el.x - p &&
-          canvasPos.x <= el.x + w + p &&
-          canvasPos.y >= el.y - el.fontSize / 2 - p &&
-          canvasPos.y <= el.y + el.fontSize / 2 + p
+          canvasPos.x >= el.x - p - 8 &&
+          canvasPos.x <= el.x + maxWidth + p + 8 &&
+          canvasPos.y >= el.y - p - 8 &&
+          canvasPos.y <= el.y + totalHeight + p + 8
         ) {
           return el;
         }
@@ -243,16 +736,16 @@ const ImageEditor = ({ file, onSave, onClose }) => {
         const yMin = Math.min(el.y, el.y + el.h);
         const yMax = Math.max(el.y, el.y + el.h);
         if (
-          canvasPos.x >= xMin &&
-          canvasPos.x <= xMax &&
-          canvasPos.y >= yMin &&
-          canvasPos.y <= yMax
+          canvasPos.x >= xMin - 8 &&
+          canvasPos.x <= xMax + 8 &&
+          canvasPos.y >= yMin - 8 &&
+          canvasPos.y <= yMax + 8
         ) {
           return el;
         }
       } else if (el.type === "circle") {
         const dist = Math.sqrt((canvasPos.x - el.x) ** 2 + (canvasPos.y - el.y) ** 2);
-        if (dist <= el.r) {
+        if (dist <= el.r + 8) {
           return el;
         }
       } else if (el.type === "brush") {
@@ -263,12 +756,62 @@ const ImageEditor = ({ file, onSave, onClose }) => {
         if (isHit) {
           return el;
         }
+      } else if (el.type === "stamp") {
+        const w = el.stampType.includes("square") || el.stampType === "circle_name" ? el.size : el.size * 1.5;
+        const h = el.size * 0.8;
+        if (
+          canvasPos.x >= el.x - w / 2 - 8 &&
+          canvasPos.x <= el.x + w / 2 + 8 &&
+          canvasPos.y >= el.y - h / 2 - 8 &&
+          canvasPos.y <= el.y + h / 2 + 8
+        ) {
+          return el;
+        }
       }
     }
     return null;
   };
 
-  const handleStart = (clientX, clientY) => {
+  // Move selected element by delta
+  const moveSelectedElementBy = (dx, dy) => {
+    if (!selectedId) return;
+    setElements((prev) =>
+      prev.map((el) => {
+        if (el.id !== selectedId) return el;
+        if (el.type === "brush") {
+          return {
+            ...el,
+            points: el.points.map((p) => ({ x: p.x + dx, y: p.y + dy }))
+          };
+        }
+        return {
+          ...el,
+          x: el.x + dx,
+          y: el.y + dy
+        };
+      })
+    );
+  };
+
+  // Pointer Down handler
+  const handleStart = (clientX, clientY, button = 0) => {
+    // If Space is pressed or Hand tool or Middle click, start pan
+    if (isSpacePressed || tool === "hand" || button === 1) {
+      isPanningRef.current = true;
+      const container = containerRef.current;
+      if (container) {
+        panStartRef.current = {
+          x: clientX,
+          y: clientY,
+          scrollLeft: container.scrollLeft,
+          scrollTop: container.scrollTop
+        };
+      }
+      return;
+    }
+
+    if (button !== 0) return; // Only primary mouse button for drawing
+
     isMouseDown.current = true;
     const pos = getCanvasCoords(clientX, clientY);
 
@@ -289,7 +832,7 @@ const ImageEditor = ({ file, onSave, onClose }) => {
     } else if (tool === "brush") {
       setHistory((prev) => [...prev, elements]);
       const newEl = {
-        id: Math.random().toString(36).substr(2, 9),
+        id: generateId(),
         type: "brush",
         points: [pos],
         color: color,
@@ -300,7 +843,7 @@ const ImageEditor = ({ file, onSave, onClose }) => {
     } else if (tool === "rect") {
       setHistory((prev) => [...prev, elements]);
       const newEl = {
-        id: Math.random().toString(36).substr(2, 9),
+        id: generateId(),
         type: "rect",
         x: pos.x,
         y: pos.y,
@@ -317,7 +860,7 @@ const ImageEditor = ({ file, onSave, onClose }) => {
     } else if (tool === "circle") {
       setHistory((prev) => [...prev, elements]);
       const newEl = {
-        id: Math.random().toString(36).substr(2, 9),
+        id: generateId(),
         type: "circle",
         x: pos.x,
         y: pos.y,
@@ -330,10 +873,59 @@ const ImageEditor = ({ file, onSave, onClose }) => {
       activeShapeId.current = newEl.id;
       isDrawingShape.current = true;
       dragStartPos.current = pos;
+    } else if (tool === "stamp") {
+      setHistory((prev) => [...prev, elements]);
+      const text =
+        stampType === "approved"
+          ? "承認"
+          : stampType === "confidential"
+            ? "社外秘"
+            : stampType === "urgent"
+              ? "至急"
+              : stampType === "done"
+                ? "済"
+                : stampText;
+
+      const newEl = {
+        id: generateId(),
+        type: "stamp",
+        stampType: stampType,
+        text: text,
+        x: pos.x,
+        y: pos.y,
+        color: stampColor,
+        size: stampSize
+      };
+      setElements((prev) => [...prev, newEl]);
+      setSelectedId(newEl.id);
+      setTool("select");
+    } else if (tool === "text") {
+      // Start inline text editing at clicked canvas pos
+      setEditingTextState({
+        id: null,
+        text: "",
+        canvasX: pos.x,
+        canvasY: pos.y,
+        fontSize: fontSize,
+        color: color,
+        useBg: useTextBg
+      });
     }
   };
 
+  // Pointer Move handler
   const handleMove = (clientX, clientY) => {
+    if (isPanningRef.current) {
+      const container = containerRef.current;
+      if (container) {
+        const dx = clientX - panStartRef.current.x;
+        const dy = clientY - panStartRef.current.y;
+        container.scrollLeft = panStartRef.current.scrollLeft - dx;
+        container.scrollTop = panStartRef.current.scrollTop - dy;
+      }
+      return;
+    }
+
     if (!isMouseDown.current) return;
     const pos = getCanvasCoords(clientX, clientY);
 
@@ -400,53 +992,83 @@ const ImageEditor = ({ file, onSave, onClose }) => {
     }
   };
 
+  // Pointer Up handler
   const handleEnd = () => {
+    isPanningRef.current = false;
     isMouseDown.current = false;
     isDraggingElement.current = false;
     isDrawingShape.current = false;
     activeShapeId.current = null;
   };
 
-  const handleCanvasClick = (e) => {
-    if (tool !== "text" || textPos) return;
-    const canvas = canvasRef.current;
-    const rect = canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-    setTextPos({ x, y });
-    setTextInput("");
+  // Double Click handler -> Trigger inline text re-editing
+  const handleDoubleClick = (e) => {
+    const pos = getCanvasCoords(e.clientX, e.clientY);
+    const hit = detectHitElement(pos);
+    if (hit && hit.type === "text") {
+      setEditingTextState({
+        id: hit.id,
+        text: hit.text,
+        canvasX: hit.x,
+        canvasY: hit.y,
+        fontSize: hit.fontSize,
+        color: hit.color,
+        useBg: hit.useBg
+      });
+      setSelectedId(hit.id);
+    }
   };
 
+  // Submit Text (either new or existing)
   const submitText = () => {
-    if (!textInput.trim() || !textPos) {
-      setTextPos(null);
+    if (!editingTextState) return;
+
+    const trimmed = (editingTextState.text || "").trim();
+    if (!trimmed) {
+      // If existing was emptied, delete it; if new, cancel
+      if (editingTextState.id) {
+        setElements((prev) => prev.filter((el) => el.id !== editingTextState.id));
+      }
+      setEditingTextState(null);
       return;
     }
 
     setHistory((prev) => [...prev, elements]);
-    const canvas = canvasRef.current;
-    const canvasPos = getCanvasCoords(
-      textPos.x + canvas.getBoundingClientRect().left,
-      textPos.y + canvas.getBoundingClientRect().top
-    );
 
-    const newEl = {
-      id: Math.random().toString(36).substr(2, 9),
-      type: "text",
-      text: textInput,
-      x: canvasPos.x,
-      y: canvasPos.y,
-      fontSize: fontSize,
-      color: color,
-      useBg: useTextBg
-    };
+    if (editingTextState.id) {
+      // Update existing
+      setElements((prev) =>
+        prev.map((el) =>
+          el.id === editingTextState.id
+            ? {
+                ...el,
+                text: editingTextState.text,
+                fontSize: editingTextState.fontSize,
+                color: editingTextState.color,
+                useBg: editingTextState.useBg
+              }
+            : el
+        )
+      );
+      setSelectedId(editingTextState.id);
+    } else {
+      // Create new text
+      const newEl = {
+        id: generateId(),
+        type: "text",
+        text: editingTextState.text,
+        x: editingTextState.canvasX,
+        y: editingTextState.canvasY,
+        fontSize: editingTextState.fontSize,
+        color: editingTextState.color,
+        useBg: editingTextState.useBg
+      };
+      setElements((prev) => [...prev, newEl]);
+      setSelectedId(newEl.id);
+      setTool("select");
+    }
 
-    setElements((prev) => [...prev, newEl]);
-    setSelectedId(newEl.id);
-    setTool("select"); // Automatically switch to select tool to allow dragging
-
-    setTextPos(null);
-    setTextInput("");
+    setEditingTextState(null);
   };
 
   const handleUndo = () => {
@@ -455,6 +1077,7 @@ const ImageEditor = ({ file, onSave, onClose }) => {
     setElements(prevElements);
     setHistory((prev) => prev.slice(0, -1));
     setSelectedId(null);
+    setEditingTextState(null);
   };
 
   const deleteSelectedElement = () => {
@@ -462,70 +1085,71 @@ const ImageEditor = ({ file, onSave, onClose }) => {
     setHistory((prev) => [...prev, elements]);
     setElements((prev) => prev.filter((el) => el.id !== selectedId));
     setSelectedId(null);
+    if (editingTextState && editingTextState.id === selectedId) {
+      setEditingTextState(null);
+    }
   };
 
-  const updateSelectedShapeStyle = (mode) => {
+  // Update selected element property directly
+  const updateSelectedElement = (updates) => {
     if (!selectedId) return;
-    setHistory((prev) => [...prev, elements]);
     setElements((prev) =>
-      prev.map((el) =>
-        el.id === selectedId ? { ...el, fillMode: mode } : el
-      )
+      prev.map((el) => (el.id === selectedId ? { ...el, ...updates } : el))
     );
   };
 
-  const updateSelectedShapeThickness = (thickness) => {
-    if (!selectedId) return;
-    setElements((prev) =>
-      prev.map((el) =>
-        el.id === selectedId ? { ...el, brushSize: thickness } : el
-      )
-    );
-  };
+  const selectedElement = elements.find((e) => e.id === selectedId);
 
   const handleSave = () => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    // Deselect before exporting to avoid drawing blue outline
     setSelectedId(null);
-    
-    // We defer slightly to allow state and render to complete without the selection border
-    setTimeout(() => {
-      const dataUrl = canvas.toDataURL("image/png", 1.0);
-      onSave(dataUrl);
-    }, 50);
+    setEditingTextState(null);
+
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const dataUrl = canvas.toDataURL("image/png", 1.0);
+        onSave(dataUrl);
+      });
+    });
   };
 
   return (
-    <div className="fixed inset-0 z-[100] flex flex-col bg-black/90 text-white">
+    <div className="fixed inset-0 z-[100] flex flex-col bg-gray-950 text-white select-none">
       {/* Editor Header */}
-      <div className="h-16 bg-gray-900 border-b border-gray-800 px-6 flex items-center justify-between">
+      <div className="h-16 bg-gray-900 border-b border-gray-800 px-4 sm:px-6 flex items-center justify-between shrink-0 shadow-md">
         <div className="flex items-center space-x-3">
           <Pencil className="w-5 h-5 text-orange-500" />
-          <span className="font-bold text-sm sm:text-base truncate max-w-[200px] sm:max-w-md">
+          <span className="font-bold text-sm sm:text-base truncate max-w-[200px] sm:max-w-md text-gray-100">
             {file.name} を編集
           </span>
+          <span className="hidden md:inline-block text-xs bg-gray-800 text-gray-400 px-2.5 py-1 rounded-full border border-gray-700">
+            {imgRef.current ? `${imgRef.current.naturalWidth} × ${imgRef.current.naturalHeight} px` : ""}
+          </span>
         </div>
+
         <div className="flex items-center space-x-2">
           <button
             onClick={handleUndo}
             disabled={history.length === 0}
-            className="flex items-center space-x-1 bg-gray-800 hover:bg-gray-700 disabled:opacity-40 px-3 py-1.5 rounded-lg text-sm transition-colors"
+            title="元に戻す (Ctrl+Z)"
+            className="flex items-center space-x-1 bg-gray-800 hover:bg-gray-700 disabled:opacity-40 px-3 py-1.5 rounded-lg text-xs sm:text-sm transition-colors border border-gray-700"
           >
             <Undo className="w-4 h-4" />
             <span className="hidden sm:inline">元に戻す</span>
           </button>
           <button
             onClick={handleSave}
-            className="flex items-center space-x-1 bg-orange-600 hover:bg-orange-500 px-4 py-1.5 rounded-lg text-sm font-medium transition-colors"
+            className="flex items-center space-x-1 bg-orange-600 hover:bg-orange-500 px-4 py-1.5 rounded-lg text-xs sm:text-sm font-semibold transition-all shadow-lg shadow-orange-600/20"
           >
             <Check className="w-4 h-4" />
             <span>確定して保存</span>
           </button>
           <button
             onClick={onClose}
-            className="p-1.5 hover:bg-gray-800 rounded-lg transition-colors"
+            title="閉じる"
+            className="p-1.5 hover:bg-gray-800 text-gray-400 hover:text-white rounded-lg transition-colors ml-2"
           >
             <X className="w-6 h-6" />
           </button>
@@ -533,175 +1157,295 @@ const ImageEditor = ({ file, onSave, onClose }) => {
       </div>
 
       {/* Editor Body */}
-      <div className="flex-grow flex flex-col md:flex-row overflow-hidden">
+      <div className="flex-grow flex flex-col md:flex-row overflow-hidden relative">
         {/* Sidebar Controls */}
-        <div className="w-full md:w-80 bg-gray-900 border-r border-gray-800 p-5 space-y-6 shrink-0 overflow-y-auto">
+        <div className="w-full md:w-80 bg-gray-900 border-r border-gray-800 p-4 sm:p-5 space-y-5 shrink-0 overflow-y-auto max-h-[40vh] md:max-h-full">
           {/* Tool Selector */}
           <div className="space-y-2">
-            <label className="text-xs font-semibold uppercase tracking-wider text-gray-400">
-              編集ツール
-            </label>
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-bold uppercase tracking-wider text-gray-400">
+                編集ツール
+              </label>
+              <span className="text-[11px] text-gray-500">Space+ドラッグで移動</span>
+            </div>
             <div className="grid grid-cols-2 gap-2">
               <button
                 onClick={() => {
                   setTool("select");
-                  setTextPos(null);
+                  if (editingTextState && !editingTextState.id) setEditingTextState(null);
                 }}
-                className={`flex items-center justify-center space-x-2 py-2 rounded-lg border transition-all ${
+                className={`flex items-center justify-center space-x-2 py-2.5 rounded-lg border transition-all ${
                   tool === "select"
-                    ? "bg-orange-600 border-orange-500 text-white shadow-lg shadow-orange-600/20"
+                    ? "bg-orange-600 border-orange-500 text-white shadow-lg shadow-orange-600/20 font-bold"
                     : "bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-750"
                 }`}
               >
                 <MousePointer className="w-4 h-4" />
-                <span className="text-sm font-medium">選択・移動</span>
+                <span className="text-sm">選択・移動</span>
               </button>
-              <button
-                onClick={() => {
-                  setTool("brush");
-                  setTextPos(null);
-                  setSelectedId(null);
-                }}
-                className={`flex items-center justify-center space-x-2 py-2 rounded-lg border transition-all ${
-                  tool === "brush"
-                    ? "bg-orange-600 border-orange-500 text-white shadow-lg shadow-orange-600/20"
-                    : "bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-750"
-                }`}
-              >
-                <Paintbrush className="w-4 h-4" />
-                <span className="text-sm font-medium">墨消しペン</span>
-              </button>
-              <button
-                onClick={() => {
-                  setTool("rect");
-                  setTextPos(null);
-                  setSelectedId(null);
-                }}
-                className={`flex items-center justify-center space-x-2 py-2 rounded-lg border transition-all ${
-                  tool === "rect"
-                    ? "bg-orange-600 border-orange-500 text-white shadow-lg shadow-orange-600/20"
-                    : "bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-750"
-                }`}
-              >
-                <Square className="w-4 h-4" />
-                <span className="text-sm font-medium">四角(□)</span>
-              </button>
-              <button
-                onClick={() => {
-                  setTool("circle");
-                  setTextPos(null);
-                  setSelectedId(null);
-                }}
-                className={`flex items-center justify-center space-x-2 py-2 rounded-lg border transition-all ${
-                  tool === "circle"
-                    ? "bg-orange-600 border-orange-500 text-white shadow-lg shadow-orange-600/20"
-                    : "bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-750"
-                }`}
-              >
-                <Circle className="w-4 h-4" />
-                <span className="text-sm font-medium">丸(○)</span>
-              </button>
+
               <button
                 onClick={() => {
                   setTool("text");
-                  setTextPos(null);
                   setSelectedId(null);
                 }}
-                className={`col-span-2 flex items-center justify-center space-x-2 py-2 rounded-lg border transition-all ${
+                className={`flex items-center justify-center space-x-2 py-2.5 rounded-lg border transition-all ${
                   tool === "text"
-                    ? "bg-orange-600 border-orange-500 text-white shadow-lg shadow-orange-600/20"
+                    ? "bg-orange-600 border-orange-500 text-white shadow-lg shadow-orange-600/20 font-bold"
                     : "bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-750"
                 }`}
               >
                 <Type className="w-4 h-4" />
-                <span className="text-sm font-medium">文字入れ</span>
+                <span className="text-sm">文字入れ</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setTool("brush");
+                  setSelectedId(null);
+                  if (editingTextState && !editingTextState.id) setEditingTextState(null);
+                }}
+                className={`flex items-center justify-center space-x-2 py-2.5 rounded-lg border transition-all ${
+                  tool === "brush"
+                    ? "bg-orange-600 border-orange-500 text-white shadow-lg shadow-orange-600/20 font-bold"
+                    : "bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-750"
+                }`}
+              >
+                <Paintbrush className="w-4 h-4" />
+                <span className="text-sm">墨消しペン</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setTool("rect");
+                  setSelectedId(null);
+                  if (editingTextState && !editingTextState.id) setEditingTextState(null);
+                }}
+                className={`flex items-center justify-center space-x-2 py-2.5 rounded-lg border transition-all ${
+                  tool === "rect"
+                    ? "bg-orange-600 border-orange-500 text-white shadow-lg shadow-orange-600/20 font-bold"
+                    : "bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-750"
+                }`}
+              >
+                <Square className="w-4 h-4" />
+                <span className="text-sm">四角(□)</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setTool("circle");
+                  setSelectedId(null);
+                  if (editingTextState && !editingTextState.id) setEditingTextState(null);
+                }}
+                className={`flex items-center justify-center space-x-2 py-2.5 rounded-lg border transition-all ${
+                  tool === "circle"
+                    ? "bg-orange-600 border-orange-500 text-white shadow-lg shadow-orange-600/20 font-bold"
+                    : "bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-750"
+                }`}
+              >
+                <Circle className="w-4 h-4" />
+                <span className="text-sm">丸(○)</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setTool("stamp");
+                  setSelectedId(null);
+                  if (editingTextState && !editingTextState.id) setEditingTextState(null);
+                }}
+                className={`flex items-center justify-center space-x-2 py-2.5 rounded-lg border transition-all ${
+                  tool === "stamp"
+                    ? "bg-orange-600 border-orange-500 text-white shadow-lg shadow-orange-600/20 font-bold"
+                    : "bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-750"
+                }`}
+              >
+                <Layers className="w-4 h-4" />
+                <span className="text-sm">スタンプ</span>
               </button>
             </div>
           </div>
 
-          {/* Delete selected element */}
-          {selectedId && tool === "select" && (
-            <div className="space-y-1 animate-fadeIn">
-              <label className="text-xs font-semibold uppercase tracking-wider text-gray-400">
-                要素の操作
-              </label>
-              <button
-                onClick={deleteSelectedElement}
-                className="w-full flex items-center justify-center space-x-2 bg-red-950 border border-red-700 hover:bg-red-900 text-red-200 py-2.5 rounded-lg text-sm font-medium transition-all"
-              >
-                <Trash2 className="w-4 h-4" />
-                <span>選択中の要素を削除</span>
-              </button>
-            </div>
-          )}
-
-          {/* Selected shape style controls */}
-          {selectedId && tool === "select" && (() => {
-            const el = elements.find(e => e.id === selectedId);
-            if (el && (el.type === "rect" || el.type === "circle")) {
-              return (
-                <div className="space-y-4 p-4 bg-gray-850 rounded-xl border border-gray-800 animate-fadeIn">
-                  <div className="space-y-2">
-                    <label className="text-xs font-semibold uppercase tracking-wider text-gray-400">
-                      図形スタイル (選択中)
+          {/* Selected Element Live Editor (DocuWorks-like instant modification) */}
+          {selectedElement && tool === "select" && (
+            <div className="space-y-3.5 p-3.5 bg-blue-950/40 border border-blue-800/60 rounded-xl animate-fadeIn">
+              <div className="flex items-center justify-between border-b border-blue-800/40 pb-2">
+                <span className="text-xs font-bold text-blue-300 flex items-center gap-1.5">
+                  <Sliders className="w-3.5 h-3.5" />
+                  選択中の要素を編集
+                </span>
+                <button
+                  onClick={deleteSelectedElement}
+                  title="削除 (Delete)"
+                  className="text-red-400 hover:text-red-300 text-xs flex items-center gap-1 hover:bg-red-950/50 px-2 py-1 rounded transition-colors"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  削除
+                </button>
+              </div>
+              {selectedElement.type === "text" && (
+                <div className="space-y-3">
+                  <div className="space-y-1.5">
+                    <label className="text-[11px] font-semibold text-gray-300">
+                      文字の内容 (複数行可)
                     </label>
-                    <div className="grid grid-cols-2 gap-2">
-                      <button
-                        onClick={() => updateSelectedShapeStyle("fill")}
-                        className={`py-1.5 rounded text-xs font-medium border ${
-                          el.fillMode !== "stroke"
-                            ? "bg-orange-600 border-orange-500 text-white"
-                            : "bg-gray-800 border-gray-755 text-gray-300 hover:bg-gray-700"
-                        }`}
-                      >
-                        塗りつぶし
-                      </button>
-                      <button
-                        onClick={() => updateSelectedShapeStyle("stroke")}
-                        className={`py-1.5 rounded text-xs font-medium border ${
-                          el.fillMode === "stroke"
-                            ? "bg-orange-600 border-orange-500 text-white"
-                            : "bg-gray-800 border-gray-755 text-gray-300 hover:bg-gray-700"
-                        }`}
-                      >
-                        枠線のみ
-                      </button>
-                    </div>
+                    <textarea
+                      rows={2}
+                      value={selectedElement.text}
+                      onChange={(e) => updateSelectedElement({ text: e.target.value })}
+                      placeholder="文字を入力..."
+                      className="w-full bg-white text-gray-900 text-xs border border-gray-300 rounded-lg p-2.5 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-blue-500 font-sans leading-relaxed shadow-sm"
+                    />
                   </div>
 
-                  {el.fillMode === "stroke" && (
-                    <div className="space-y-2">
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-xs">
+                      <span className="text-gray-300">フォントサイズ</span>
+                      <span className="text-blue-400 font-bold">{selectedElement.fontSize}px</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="12"
+                      max="200"
+                      value={selectedElement.fontSize || 30}
+                      onChange={(e) => updateSelectedElement({ fontSize: parseInt(e.target.value) })}
+                      className="w-full h-1.5 bg-gray-750 rounded-lg appearance-none cursor-pointer"
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between pt-1">
+                    <label className="text-xs text-gray-300 flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={selectedElement.useBg || false}
+                        onChange={(e) => updateSelectedElement({ useBg: e.target.checked })}
+                        className="w-4 h-4 rounded text-blue-600 bg-gray-800 border-gray-700 focus:ring-blue-500"
+                      />
+                      背景座布団をつける
+                    </label>
+
+                    <div className="flex items-center gap-1">
+                      {["#000000", "#ffffff", "#ff0000", "#0000ff"].map((c) => (
+                        <button
+                          key={c}
+                          onClick={() => updateSelectedElement({ color: c })}
+                          className={`w-5 h-5 rounded-full border transition-transform ${
+                            selectedElement.color === c ? "scale-125 ring-2 ring-blue-400" : "border-gray-600"
+                          }`}
+                          style={{ backgroundColor: c }}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Shape specific inspector */}
+              {(selectedElement.type === "rect" || selectedElement.type === "circle") && (
+                <div className="space-y-3">
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      onClick={() => updateSelectedElement({ fillMode: "fill" })}
+                      className={`py-1.5 rounded text-xs font-medium border ${
+                        selectedElement.fillMode !== "stroke"
+                          ? "bg-blue-600 border-blue-500 text-white font-bold"
+                          : "bg-gray-800 border-gray-700 text-gray-300"
+                      }`}
+                    >
+                      塗りつぶし
+                    </button>
+                    <button
+                      onClick={() => updateSelectedElement({ fillMode: "stroke" })}
+                      className={`py-1.5 rounded text-xs font-medium border ${
+                        selectedElement.fillMode === "stroke"
+                          ? "bg-blue-600 border-blue-500 text-white font-bold"
+                          : "bg-gray-800 border-gray-700 text-gray-300"
+                      }`}
+                    >
+                      枠線のみ
+                    </button>
+                  </div>
+
+                  {selectedElement.fillMode === "stroke" && (
+                    <div className="space-y-1">
                       <div className="flex justify-between text-xs">
-                        <span className="text-gray-400">枠線の太さ</span>
-                        <span className="text-orange-500 font-bold">{el.brushSize}px</span>
+                        <span className="text-gray-300">枠線の太さ</span>
+                        <span className="text-blue-400 font-bold">{selectedElement.brushSize || 5}px</span>
                       </div>
                       <input
                         type="range"
                         min="2"
-                        max="50"
-                        value={el.brushSize || 5}
-                        onChange={(e) => updateSelectedShapeThickness(parseInt(e.target.value))}
-                        className="w-full h-1 bg-gray-750 rounded-lg appearance-none cursor-pointer"
+                        max="60"
+                        value={selectedElement.brushSize || 5}
+                        onChange={(e) => updateSelectedElement({ brushSize: parseInt(e.target.value) })}
+                        className="w-full h-1.5 bg-gray-750 rounded-lg appearance-none cursor-pointer"
                       />
                     </div>
                   )}
-                </div>
-              );
-            }
-            return null;
-          })()}
 
-          {/* Color Selector */}
+                  <div className="flex items-center gap-1.5 pt-1">
+                    <span className="text-xs text-gray-400">色:</span>
+                    {["#000000", "#ffffff", "#ff0000", "#0000ff", "#22c55e"].map((c) => (
+                      <button
+                        key={c}
+                        onClick={() => updateSelectedElement({ color: c })}
+                        className={`w-5 h-5 rounded-full border transition-transform ${
+                          selectedElement.color === c ? "scale-125 ring-2 ring-blue-400" : "border-gray-600"
+                        }`}
+                        style={{ backgroundColor: c }}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Stamp specific inspector */}
+              {selectedElement.type === "stamp" && (
+                <div className="space-y-3">
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-xs">
+                      <span className="text-gray-300">スタンプサイズ</span>
+                      <span className="text-blue-400 font-bold">{selectedElement.size}px</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="30"
+                      max="250"
+                      value={selectedElement.size || 70}
+                      onChange={(e) => updateSelectedElement({ size: parseInt(e.target.value) })}
+                      className="w-full h-1.5 bg-gray-750 rounded-lg appearance-none cursor-pointer"
+                    />
+                  </div>
+
+                  <div className="flex items-center gap-1.5 pt-1">
+                    <span className="text-xs text-gray-400">色:</span>
+                    {["#ff0000", "#0000ff", "#008000", "#000000"].map((c) => (
+                      <button
+                        key={c}
+                        onClick={() => updateSelectedElement({ color: c })}
+                        className={`w-5 h-5 rounded-full border transition-transform ${
+                          selectedElement.color === c ? "scale-125 ring-2 ring-blue-400" : "border-gray-600"
+                        }`}
+                        style={{ backgroundColor: c }}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Color Palette Selector */}
           <div className="space-y-2">
-            <label className="text-xs font-semibold uppercase tracking-wider text-gray-400">
+            <label className="text-xs font-bold uppercase tracking-wider text-gray-400">
               カラー選択
             </label>
             <div className="flex items-center space-x-3">
               {[
-                { name: "黒 (墨消し用)", hex: "#000000" },
-                { name: "白 (白消し用)", hex: "#ffffff" },
-                { name: "赤 (強調用)", hex: "#ff0000" },
-                { name: "青", hex: "#0000ff" }
+                { name: "黒 (墨消し/文字)", hex: "#000000" },
+                { name: "白 (白消し)", hex: "#ffffff" },
+                { name: "赤 (強調/スタンプ)", hex: "#ff0000" },
+                { name: "青 (指示/チェック)", hex: "#0000ff" },
+                { name: "緑 (完了)", hex: "#22c55e" }
               ].map((c) => (
                 <button
                   key={c.hex}
@@ -709,8 +1453,8 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                   title={c.name}
                   className={`w-8 h-8 rounded-full border-2 transition-all ${
                     color === c.hex
-                      ? "border-orange-500 scale-110 ring-2 ring-orange-500/20"
-                      : "border-gray-750 hover:scale-105"
+                      ? "border-orange-500 scale-110 ring-2 ring-orange-500/30"
+                      : "border-gray-700 hover:scale-105"
                   }`}
                   style={{ backgroundColor: c.hex }}
                 />
@@ -718,42 +1462,48 @@ const ImageEditor = ({ file, onSave, onClose }) => {
             </div>
           </div>
 
-          {/* New shape style selector */}
-          {(tool === "rect" || tool === "circle") && (
-            <div className="space-y-2 animate-fadeIn">
-              <label className="text-xs font-semibold uppercase tracking-wider text-gray-400">
-                図形スタイル設定
-              </label>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  onClick={() => setShapeStyle("fill")}
-                  className={`py-2 rounded-lg text-sm font-medium border transition-all ${
-                    shapeStyle === "fill"
-                      ? "bg-gray-700 border-gray-650 text-white"
-                      : "bg-gray-800 border-gray-755 text-gray-300 hover:bg-gray-750"
-                  }`}
+          {/* Text Tool specific creation settings */}
+          {tool === "text" && (
+            <div className="space-y-3.5 p-3.5 bg-gray-850 rounded-xl border border-gray-800 animate-fadeIn">
+              <span className="text-xs font-bold text-orange-400">文字入力の設定</span>
+              <div className="space-y-1.5">
+                <div className="flex justify-between text-xs">
+                  <span className="text-gray-300">フォントサイズ</span>
+                  <span className="text-orange-500 font-bold">{fontSize}px</span>
+                </div>
+                <input
+                  type="range"
+                  min="12"
+                  max="150"
+                  value={fontSize}
+                  onChange={(e) => setFontSize(parseInt(e.target.value))}
+                  className="w-full h-1.5 bg-gray-750 rounded-lg appearance-none cursor-pointer"
+                />
+              </div>
+
+              <div className="flex items-center space-x-2 pt-1">
+                <input
+                  type="checkbox"
+                  id="textBgDefault"
+                  checked={useTextBg}
+                  onChange={(e) => setUseTextBg(e.target.checked)}
+                  className="w-4 h-4 text-orange-600 bg-gray-800 border-gray-700 rounded focus:ring-orange-500"
+                />
+                <label
+                  htmlFor="textBgDefault"
+                  className="text-xs font-medium text-gray-300 select-none cursor-pointer"
                 >
-                  塗りつぶし
-                </button>
-                <button
-                  onClick={() => setShapeStyle("stroke")}
-                  className={`py-2 rounded-lg text-sm font-medium border transition-all ${
-                    shapeStyle === "stroke"
-                      ? "bg-gray-700 border-gray-650 text-white"
-                      : "bg-gray-800 border-gray-755 text-gray-300 hover:bg-gray-750"
-                  }`}
-                >
-                  枠線のみ
-                </button>
+                  文字背景を塗りつぶす (座布団)
+                </label>
               </div>
             </div>
           )}
 
-          {/* Tool specific settings */}
+          {/* Brush / Shape Thickness Settings */}
           {(tool === "brush" || ((tool === "rect" || tool === "circle") && shapeStyle === "stroke")) && (
             <div className="space-y-2">
-              <div className="flex justify-between text-sm">
-                <label className="text-xs font-semibold uppercase tracking-wider text-gray-400">
+              <div className="flex justify-between text-xs">
+                <label className="font-bold uppercase tracking-wider text-gray-400">
                   {tool === "brush" ? "ブラシサイズ" : "線の太さ"}
                 </label>
                 <span className="text-orange-500 font-bold">{brushSize}px</span>
@@ -769,132 +1519,296 @@ const ImageEditor = ({ file, onSave, onClose }) => {
             </div>
           )}
 
-          {tool === "text" && (
-            <div className="space-y-4">
-              <div className="space-y-2">
-                <div className="flex justify-between text-sm">
-                  <label className="text-xs font-semibold uppercase tracking-wider text-gray-400">
-                    文字サイズ
-                  </label>
-                  <span className="text-orange-500 font-bold">{fontSize}px</span>
-                </div>
-                <input
-                  type="range"
-                  min="12"
-                  max="200"
-                  value={fontSize}
-                  onChange={(e) => setFontSize(parseInt(e.target.value))}
-                  className="w-full h-1.5 bg-gray-750 rounded-lg appearance-none cursor-pointer"
-                />
-              </div>
-
-              <div className="flex items-center space-x-2">
-                <input
-                  type="checkbox"
-                  id="textBg"
-                  checked={useTextBg}
-                  onChange={(e) => setUseTextBg(e.target.checked)}
-                  className="w-4 h-4 text-orange-600 bg-gray-800 border-gray-700 rounded focus:ring-orange-500 focus:ring-offset-gray-900"
-                />
-                <label
-                  htmlFor="textBg"
-                  className="text-sm font-medium text-gray-300 select-none cursor-pointer"
+          {/* Shape Style Selector */}
+          {(tool === "rect" || tool === "circle") && (
+            <div className="space-y-2 animate-fadeIn">
+              <label className="text-xs font-bold uppercase tracking-wider text-gray-400">
+                図形スタイル
+              </label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  onClick={() => setShapeStyle("fill")}
+                  className={`py-2 rounded-lg text-xs font-medium border transition-all ${
+                    shapeStyle === "fill"
+                      ? "bg-gray-700 border-gray-600 text-white font-bold"
+                      : "bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-750"
+                  }`}
                 >
-                  文字背景を塗りつぶす (座布団)
-                </label>
+                  塗りつぶし
+                </button>
+                <button
+                  onClick={() => setShapeStyle("stroke")}
+                  className={`py-2 rounded-lg text-xs font-medium border transition-all ${
+                    shapeStyle === "stroke"
+                      ? "bg-gray-700 border-gray-600 text-white font-bold"
+                      : "bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-750"
+                  }`}
+                >
+                  枠線のみ
+                </button>
               </div>
             </div>
           )}
 
-          {/* Guide Message */}
-          <div className="p-4 bg-gray-850 rounded-xl border border-gray-800/80 text-xs text-gray-400 leading-relaxed">
-            {tool === "select" && (
-              <p>
-                「選択・移動」ツールです。配置済みのテキスト、四角、丸、ペンの線を直接クリックすると選択でき、そのままドラッグして自由に移動させることができます。削除も可能です。
-              </p>
-            )}
-            {tool === "brush" && (
-              <p>
-                画像上をなぞると、選択した色で塗りつぶせます。文字消しや手書きマーカーにお使いください。
-              </p>
-            )}
-            {tool === "rect" && (
-              <p>
-                画像上をドラッグすると、指定した色で「四角形」を描画します。広範囲の文字を一括で墨消しするのに便利です。
-              </p>
-            )}
-            {tool === "circle" && (
-              <p>
-                画像上をドラッグすると、指定した色で「円（丸）」を描画します。チェックマークや強調マークに便利です。
-              </p>
-            )}
-            {tool === "text" && (
-              <p>
-                文字を入れたい部分をクリックしてください。入力後、自動的に「選択ツール」に切り替わるため、ドラッグして微調整できます。
-              </p>
-            )}
+          {/* Stamp Settings */}
+          {tool === "stamp" && (
+            <div className="space-y-3.5 p-3.5 bg-gray-850 rounded-xl border border-gray-800 animate-fadeIn">
+              <label className="text-xs font-bold uppercase tracking-wider text-gray-400">
+                スタンプの種類
+              </label>
+              <div className="grid grid-cols-2 gap-2">
+                {[
+                  { id: "approved", name: "承認 (角)" },
+                  { id: "confidential", name: "社外秘 (角)" },
+                  { id: "urgent", name: "至急 (角)" },
+                  { id: "done", name: "済 (丸)" },
+                  { id: "circle_name", name: "個人印 (丸)" },
+                  { id: "square_name", name: "会社印 (角)" }
+                ].map((s) => (
+                  <button
+                    key={s.id}
+                    onClick={() => setStampType(s.id)}
+                    className={`py-1.5 px-1 rounded-lg text-xs font-medium border transition-all ${
+                      stampType === s.id
+                        ? "bg-orange-600 border-orange-500 text-white shadow-md font-bold"
+                        : "bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-750"
+                    }`}
+                  >
+                    {s.name}
+                  </button>
+                ))}
+              </div>
+
+              {(stampType === "circle_name" || stampType === "square_name") && (
+                <div className="space-y-1.5 animate-fadeIn">
+                  <label className="text-[11px] font-semibold text-gray-400">
+                    印影の文字入力
+                  </label>
+                  <input
+                    type="text"
+                    maxLength={stampType === "circle_name" ? 4 : 8}
+                    value={stampText}
+                    onChange={(e) => setStampText(e.target.value)}
+                    placeholder={stampType === "circle_name" ? "例: 佐藤" : "例: 八洲建設"}
+                    className="w-full bg-white text-gray-900 border border-gray-300 rounded px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-orange-400 focus:border-orange-500 font-mono shadow-sm"
+                  />
+                </div>
+              )}
+
+              <div className="space-y-1">
+                <div className="flex justify-between text-xs">
+                  <span className="text-gray-400">サイズ</span>
+                  <span className="text-orange-500 font-bold">{stampSize}px</span>
+                </div>
+                <input
+                  type="range"
+                  min="30"
+                  max="200"
+                  value={stampSize}
+                  onChange={(e) => setStampSize(parseInt(e.target.value))}
+                  className="w-full h-1.5 bg-gray-750 rounded-lg appearance-none cursor-pointer"
+                />
+              </div>
+            </div>
+          )}
+
+          {/* User Guide Card */}
+          <div className="p-3.5 bg-gray-850/60 rounded-xl border border-gray-800 text-xs text-gray-400 space-y-1 leading-relaxed">
+            <p className="font-semibold text-gray-300 flex items-center gap-1">
+              💡 操作のヒント
+            </p>
+            <ul className="list-disc list-inside space-y-0.5 text-[11px]">
+              <li><strong className="text-gray-200">拡大・縮小:</strong> 下部バーまたはホイール(Ctrl+)</li>
+              <li><strong className="text-gray-200">画面移動:</strong> Spaceキーを押しながらドラッグ</li>
+              <li><strong className="text-gray-200">文字編集:</strong> 文字をダブルクリックで再編集</li>
+              <li><strong className="text-gray-200">微調整:</strong> 選択中に矢印キーで1px移動</li>
+            </ul>
           </div>
         </div>
 
-        {/* Canvas Area */}
-        <div className="flex-grow relative overflow-auto p-6 flex items-center justify-center min-h-[300px]">
-          <div className="relative inline-block max-w-full">
+        {/* Canvas Display & Interaction Area */}
+        <div
+          ref={containerRef}
+          className="flex-grow relative overflow-auto p-4 sm:p-8 flex items-center justify-center bg-gray-950"
+          style={{
+            cursor: isSpacePressed || isPanningRef.current ? "grab" : tool === "hand" ? "grab" : "default"
+          }}
+        >
+          <div
+            ref={canvasWrapperRef}
+            className="relative inline-block shadow-2xl transition-[width,height] duration-75 ease-out"
+            style={{
+              width: imgRef.current ? `${imgRef.current.naturalWidth * zoomScale}px` : "auto",
+              height: imgRef.current ? `${imgRef.current.naturalHeight * zoomScale}px` : "auto"
+            }}
+          >
             <canvas
               ref={canvasRef}
-              onMouseDown={(e) => handleStart(e.clientX, e.clientY)}
+              onMouseDown={(e) => handleStart(e.clientX, e.clientY, e.button)}
               onMouseMove={(e) => handleMove(e.clientX, e.clientY)}
               onMouseUp={handleEnd}
               onMouseLeave={handleEnd}
+              onDoubleClick={handleDoubleClick}
               onTouchStart={(e) => {
-                if (e.touches.length > 0) handleStart(e.touches[0].clientX, e.touches[0].clientY);
+                if (e.touches.length > 0) handleStart(e.touches[0].clientX, e.touches[0].clientY, 0);
               }}
               onTouchMove={(e) => {
                 if (e.touches.length > 0) handleMove(e.touches[0].clientX, e.touches[0].clientY);
               }}
               onTouchEnd={handleEnd}
-              onClick={handleCanvasClick}
-              className={`max-h-[70vh] object-contain shadow-2xl bg-white border border-gray-850 ${
-                tool === "select" ? "cursor-default" : tool === "text" ? "cursor-text" : "cursor-crosshair"
+              className={`w-full h-full block bg-white border border-gray-800 ${
+                isSpacePressed || tool === "hand"
+                  ? "cursor-grab"
+                  : tool === "select"
+                    ? "cursor-default"
+                    : tool === "text"
+                      ? "cursor-text"
+                      : "cursor-crosshair"
               }`}
             />
 
-            {/* Inline Text Input Overlay */}
-            {textPos && (
+            {/* Inline Text Input Overlay (DocuWorks-like direct on-canvas WYSIWYG editing) */}
+            {editingTextState && canvasRef.current && (
               <div
-                className="absolute z-20 flex flex-col bg-gray-900/95 border border-orange-500/80 p-2.5 rounded-lg shadow-xl"
+                className="absolute z-30 flex flex-col bg-white text-gray-900 border-2 border-orange-500 p-3 rounded-xl shadow-2xl animate-fadeIn ring-4 ring-black/20"
                 style={{
-                  left: `${textPos.x}px`,
-                  top: `${textPos.y}px`
+                  left: `${(editingTextState.canvasX / canvasRef.current.width) * 100}%`,
+                  top: `${(editingTextState.canvasY / canvasRef.current.height) * 100}%`,
+                  minWidth: "260px",
+                  maxWidth: "90vw",
+                  transform: "translate(-10px, -10px)"
                 }}
               >
-                <input
+                <div className="flex items-center justify-between mb-2 pb-1.5 border-b border-gray-200">
+                  <span className="text-xs font-bold text-gray-800 flex items-center gap-1.5">
+                    <Edit3 className="w-3.5 h-3.5 text-orange-500" />
+                    {editingTextState.id ? "文字を再編集" : "文字を入力"}
+                  </span>
+                  <div className="flex items-center space-x-2">
+                    <span className="text-[11px] text-gray-500 font-mono font-semibold">
+                      {editingTextState.fontSize}px
+                    </span>
+                    <button
+                      onClick={() =>
+                        setEditingTextState((prev) => ({
+                          ...prev,
+                          useBg: !prev.useBg
+                        }))
+                      }
+                      title="背景座布団の切り替え"
+                      className={`text-[11px] px-2 py-0.5 rounded border transition-colors font-medium ${
+                        editingTextState.useBg
+                          ? "bg-orange-600 border-orange-500 text-white shadow-sm"
+                          : "bg-gray-100 border-gray-300 text-gray-600 hover:bg-gray-200"
+                      }`}
+                    >
+                      座布団
+                    </button>
+                  </div>
+                </div>
+
+                <textarea
                   ref={textInputRef}
-                  type="text"
-                  value={textInput}
-                  onChange={(e) => setTextInput(e.target.value)}
+                  rows={Math.max(2, (editingTextState.text || "").split("\n").length)}
+                  value={editingTextState.text}
+                  onChange={(e) =>
+                    setEditingTextState((prev) => ({
+                      ...prev,
+                      text: e.target.value
+                    }))
+                  }
                   onKeyDown={(e) => {
-                    if (e.key === "Enter") submitText();
-                    if (e.key === "Escape") setTextPos(null);
+                    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+                      e.preventDefault();
+                      submitText();
+                    }
+                    if (e.key === "Escape") {
+                      e.preventDefault();
+                      setEditingTextState(null);
+                    }
                   }}
-                  placeholder="テキストを入力"
-                  className="bg-gray-800 text-white border border-gray-700 rounded px-2.5 py-1 text-sm focus:outline-none focus:border-orange-500 w-48 sm:w-64"
+                  placeholder="テキストを入力 (Shift+Enterで改行)"
+                  className="w-full bg-white text-gray-900 border border-gray-300 rounded-lg p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-orange-400 focus:border-orange-500 resize-none font-sans leading-relaxed shadow-inner placeholder-gray-400"
                 />
-                <div className="flex justify-end space-x-1.5 mt-2">
-                  <button
-                    onClick={() => setTextPos(null)}
-                    className="px-2 py-1 bg-gray-800 hover:bg-gray-700 text-xs rounded transition-colors"
-                  >
-                    キャンセル
-                  </button>
-                  <button
-                    onClick={submitText}
-                    className="px-2.5 py-1 bg-orange-600 hover:bg-orange-500 text-xs font-semibold rounded transition-colors"
-                  >
-                    追加
-                  </button>
+
+                <div className="flex items-center justify-between mt-2.5 pt-2 border-t border-gray-200">
+                  <div className="flex items-center space-x-1.5">
+                    {["#000000", "#ff0000", "#0000ff", "#22c55e", "#ffffff"].map((c) => (
+                      <button
+                        key={c}
+                        onClick={() =>
+                          setEditingTextState((prev) => ({ ...prev, color: c }))
+                        }
+                        title={c === "#000000" ? "黒" : c === "#ff0000" ? "赤" : c === "#0000ff" ? "青" : c === "#22c55e" ? "緑" : "白"}
+                        className={`w-5 h-5 rounded-full border transition-all ${
+                          editingTextState.color === c
+                            ? "scale-125 ring-2 ring-orange-500 border-white shadow-sm"
+                            : "border-gray-300 hover:scale-110"
+                        }`}
+                        style={{ backgroundColor: c }}
+                      />
+                    ))}
+                  </div>
+
+                  <div className="flex space-x-1.5">
+                    <button
+                      onClick={() => setEditingTextState(null)}
+                      className="px-2.5 py-1 bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-medium rounded-lg transition-colors border border-gray-300"
+                    >
+                      キャンセル
+                    </button>
+                    <button
+                      onClick={submitText}
+                      className="px-3.5 py-1 bg-orange-600 hover:bg-orange-500 text-white text-xs font-bold rounded-lg transition-all shadow-md shadow-orange-600/30 active:scale-95"
+                    >
+                      確定
+                    </button>
+                  </div>
                 </div>
               </div>
             )}
+          </div>
+
+          {/* Floating Zoom Toolbar at bottom center */}
+          <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-40 bg-gray-900/90 backdrop-blur-md border border-gray-700/80 rounded-full px-4 py-2 flex items-center space-x-3 shadow-2xl">
+            <button
+              onClick={handleZoomOut}
+              title="縮小 (Zoom Out)"
+              className="p-1.5 hover:bg-gray-800 text-gray-300 hover:text-white rounded-full transition-colors"
+            >
+              <ZoomOut className="w-4 h-4" />
+            </button>
+
+            <button
+              onClick={handleZoom100}
+              title="等倍 (100%) にリセット"
+              className="text-xs font-mono font-bold text-gray-200 hover:text-orange-400 px-2 py-0.5 rounded hover:bg-gray-800 transition-colors min-w-[52px] text-center"
+            >
+              {Math.round(zoomScale * 100)}%
+            </button>
+
+            <button
+              onClick={handleZoomIn}
+              title="拡大 (Zoom In)"
+              className="p-1.5 hover:bg-gray-800 text-gray-300 hover:text-white rounded-full transition-colors"
+            >
+              <ZoomIn className="w-4 h-4" />
+            </button>
+
+            <div className="h-4 w-px bg-gray-700" />
+
+            <button
+              onClick={handleFitScreen}
+              title="画面サイズに合わせる"
+              className={`flex items-center space-x-1 text-xs px-2.5 py-1 rounded-full border transition-all ${
+                isFitMode
+                  ? "bg-orange-600/20 border-orange-500/80 text-orange-400 font-bold"
+                  : "bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-750"
+              }`}
+            >
+              <Maximize2 className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">全体表示</span>
+            </button>
           </div>
         </div>
       </div>
@@ -903,7 +1817,16 @@ const ImageEditor = ({ file, onSave, onClose }) => {
 };
 
 export default function App() {
-  const [logs, setLogs] = useState([]);
+  const settingsRunRef = useRef(0);
+  const processingCancelledRef = useRef(false);
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(TouchSensor, {
+      activationConstraint: { delay: 200, tolerance: 8 }
+    }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+  );
+  const [, setLogs] = useState([]);
   const addLog = (msg) =>
     setLogs((prev) => [
       `[${new Date().toLocaleTimeString()}] ${msg}`,
@@ -913,6 +1836,8 @@ export default function App() {
   const [files, setFiles] = useState([]);
   const [isDragging, setIsDragging] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [canCancelProcessing, setCanCancelProcessing] = useState(false);
+  const [isCancelling, setIsCancelling] = useState(false);
   const [processStatus, setProcessStatus] = useState("");
   const [editingFile, setEditingFile] = useState(null);
 
@@ -922,6 +1847,15 @@ export default function App() {
   const [maxHeight, setMaxHeight] = useState("");
   const [quality, setQuality] = useState(0.9);
   const [pdfPageRange, setPdfPageRange] = useState("");
+  const [pdfPassword, setPdfPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [pdfBlockPrinting, setPdfBlockPrinting] = useState(false);
+
+  const cancelProcessing = () => {
+    processingCancelledRef.current = true;
+    setIsCancelling(true);
+    setProcessStatus("処理を停止しています...");
+  };
 
   // Rename Settings
   const [renamePrefix, setRenamePrefix] = useState("");
@@ -934,7 +1868,8 @@ export default function App() {
     if (files.length === 0) return;
 
     const newFiles = files.map((file, index) => {
-      const ext = file.type === "image/png" ? ".png" : ".jpg";
+      // file.typeではなくtargetFormatを参照する（変換後の形式を正確に反映するため）
+      const ext = targetFormat === "image/png" ? ".png" : ".jpg";
       let baseName;
 
       if (renameBase.trim()) {
@@ -958,8 +1893,6 @@ export default function App() {
     addLog(`Renamed ${newFiles.length} files`);
   };
 
-  const generateId = () => Math.random().toString(36).substr(2, 9);
-
   const handleDragOver = (e) => {
     e.preventDefault();
     setIsDragging(true);
@@ -978,6 +1911,7 @@ export default function App() {
 
   const handleFileSelect = async (e) => {
     const selectedFiles = Array.from(e.target.files);
+    e.target.value = "";
     addLog(`Files selected: ${selectedFiles.length}`);
     await processFiles(selectedFiles);
   };
@@ -1064,19 +1998,20 @@ export default function App() {
             parseFloat(currentQuality)
           );
           resolve(data);
-        } catch (e) {
+        } catch {
           resolve(dataUrl);
         }
       };
+      img.onerror = () => resolve(dataUrl);
       img.src = dataUrl;
     });
   };
 
   const rotateImage = async (id, direction) => {
-    const fileIndex = files.findIndex((f) => f.id === id);
-    if (fileIndex === -1) return;
+    // 非同期処理前にファイルデータを同期的に取得しておく（古い参照を避けるため）
+    const file = files.find((f) => f.id === id);
+    if (!file) return;
 
-    const file = files[fileIndex];
     const angle = direction === "left" ? -90 : 90;
 
     const img = new Image();
@@ -1103,14 +2038,19 @@ export default function App() {
       targetFormat === "application/pdf" ? "image/jpeg" : targetFormat
     );
 
-    const newFiles = [...files];
-    newFiles[fileIndex] = {
-      ...file,
-      originalSrc: newOriginalSrc,
-      src: newDisplaySrc,
-      size: Math.round((newDisplaySrc.length * 3) / 4)
-    };
-    setFiles(newFiles);
+    // 関数形式のsetFilesで最新のstateを元に更新し、古いクロージャの問題を回避
+    setFiles((prev) =>
+      prev.map((f) =>
+        f.id === id
+          ? {
+              ...f,
+              originalSrc: newOriginalSrc,
+              src: newDisplaySrc,
+              size: Math.round((newDisplaySrc.length * 3) / 4)
+            }
+          : f
+      )
+    );
   };
 
   // Move files (Reordering)
@@ -1125,10 +2065,21 @@ export default function App() {
     setFiles(newFiles);
   };
 
+  const handleDragEnd = ({ active, over }) => {
+    if (!over || active.id === over.id) return;
+    setFiles((currentFiles) => {
+      const oldIndex = currentFiles.findIndex((file) => file.id === active.id);
+      const newIndex = currentFiles.findIndex((file) => file.id === over.id);
+      if (oldIndex === -1 || newIndex === -1) return currentFiles;
+      return arrayMove(currentFiles, oldIndex, newIndex);
+    });
+  };
+
   const copyToClipboard = async (file) => {
     try {
-      const response = await fetch(file.src);
-      const blob = await response.blob();
+      // data: URI に対してfetchを使うと環境によって失敗するため、
+      // 既存のdataURLtoBlobを使ってBlobに変換する
+      const blob = dataURLtoBlob(file.src);
       await navigator.clipboard.write([
         new ClipboardItem({
           [blob.type]: blob
@@ -1151,6 +2102,7 @@ export default function App() {
 
   // Re-process all files when settings change
   useEffect(() => {
+    const runId = ++settingsRunRef.current;
     const timer = setTimeout(async () => {
       if (files.length === 0) return;
 
@@ -1166,9 +2118,10 @@ export default function App() {
           quality,
           targetFormat === "application/pdf" ? "image/jpeg" : targetFormat
         );
+        if (runId !== settingsRunRef.current) return;
         const newSize = Math.round((newSrc.length * 3) / 4);
 
-        const newType = targetFormat;
+        const newType = targetFormat === "application/pdf" ? "image/jpeg" : targetFormat;
         const ext = targetFormat === "image/png" ? ".png" : ".jpg";
         const newName = file.userRenamed
           ? file.name
@@ -1186,15 +2139,23 @@ export default function App() {
         }
       }
 
-      if (changed) {
+      if (changed && runId === settingsRunRef.current) {
         setFiles(newFiles);
       }
     }, 500);
 
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(timer);
+      settingsRunRef.current += 1;
+    };
+  // File changes are outputs of this effect; including them would create a conversion loop.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [maxWidth, maxHeight, quality, targetFormat]);
 
   const processFiles = async (fileList) => {
+    processingCancelledRef.current = false;
+    setIsCancelling(false);
+    setCanCancelProcessing(true);
     setIsProcessing(true);
     setProcessStatus("ファイルを読み込んでいます...");
     addLog(`Processing ${fileList.length} files...`);
@@ -1202,13 +2163,33 @@ export default function App() {
     const newProcessedFiles = [];
 
     for (const file of fileList) {
+      if (processingCancelledRef.current) break;
       try {
         let processedItems = [];
         const isHeic =
           file.name.toLowerCase().endsWith(".heic") ||
           file.type === "image/heic";
 
+        const isDocx =
+          file.name.toLowerCase().endsWith(".docx") ||
+          file.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
+        const isXlsx =
+          file.name.toLowerCase().endsWith(".xlsx") ||
+          file.name.toLowerCase().endsWith(".xls") ||
+          file.type === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
+          file.type === "application/vnd.ms-excel";
+
         if (file.type === "application/pdf") {
+          if (
+            file.size >= LARGE_PDF_FILE_BYTES &&
+            !confirm(
+              `${file.name} は ${formatBytes(file.size)} あります。\n` +
+                "処理に時間がかかり、ブラウザのメモリを多く使用する可能性があります。続行しますか？"
+            )
+          ) {
+            continue;
+          }
           setProcessStatus(`PDFを変換中: ${file.name}`);
           processedItems = await convertPdfToImages(file);
         } else if (isHeic) {
@@ -1228,6 +2209,18 @@ export default function App() {
 
           const item = await processImage(convertedFile, true);
           processedItems = [item];
+        } else if (isDocx) {
+          setProcessStatus(`Word文書を変換中: ${file.name}`);
+          const items = await convertDocxToImages(file, (current, total) => {
+            setProcessStatus(`Word文書を変換中: ${file.name} (${current} / ${total} ページ)`);
+          });
+          processedItems = items;
+        } else if (isXlsx) {
+          setProcessStatus(`Excel文書を変換中: ${file.name}`);
+          const items = await convertXlsxToImages(file, (current, total) => {
+            setProcessStatus(`Excel文書を変換中: ${file.name} (${current} / ${total} シート)`);
+          });
+          processedItems = items;
         } else if (file.type.startsWith("image/")) {
           setProcessStatus(`画像を処理中: ${file.name}`);
           const item = await processImage(file);
@@ -1236,6 +2229,7 @@ export default function App() {
 
         // Apply settings immediately
         for (let i = 0; i < processedItems.length; i++) {
+          if (processingCancelledRef.current) break;
           const resizedDataUrl = await resizeImage(
             processedItems[i].originalSrc,
             maxWidth,
@@ -1263,6 +2257,7 @@ export default function App() {
 
         newProcessedFiles.push(...processedItems);
       } catch (error) {
+        if (error instanceof ProcessingCancelledError) break;
         console.error("Processing Error:", error);
         alert(`エラーが発生しました: ${file.name}\n${error.message}`);
       }
@@ -1270,53 +2265,111 @@ export default function App() {
 
     setFiles((prev) => [...newProcessedFiles, ...prev]);
     setIsProcessing(false);
+    setCanCancelProcessing(false);
+    setIsCancelling(false);
     setProcessStatus("");
   };
 
   const convertPdfToImages = async (file) => {
     const arrayBuffer = await file.arrayBuffer();
-    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+    const loadingTask = pdfjsLib.getDocument({
+      data: arrayBuffer,
+      ...PDFJS_DOCUMENT_OPTIONS
+    });
+    let passwordCancelled = false;
+    loadingTask.onPassword = (updatePassword, reason) => {
+      const isRetry = reason === pdfjsLib.PasswordResponses.INCORRECT_PASSWORD;
+      const password = window.prompt(
+        isRetry
+          ? `${file.name}\nパスワードが正しくありません。もう一度入力してください。`
+          : `${file.name}\nこのPDFはパスワードで保護されています。パスワードを入力してください。`
+      );
+      if (password === null) {
+        passwordCancelled = true;
+        loadingTask.destroy();
+        return;
+      }
+      updatePassword(password);
+    };
+
+    let pdf;
+    try {
+      pdf = await loadingTask.promise;
+    } catch (error) {
+      if (passwordCancelled) {
+        throw new Error("パスワード入力がキャンセルされました", {
+          cause: error
+        });
+      }
+      throw error;
+    }
+
     const pageCount = pdf.numPages;
     const images = [];
+    const failedPages = [];
 
     const targetPages = parsePageRange(pdfPageRange);
 
-    for (let i = 1; i <= pageCount; i++) {
-      if (targetPages && !targetPages.has(i)) continue;
+    // ページ数チェックをtry/finally内に含めることでdestroy()の重複呼び出しを防ぐ
+    try {
+      if (
+        pageCount >= LARGE_PDF_PAGE_COUNT &&
+        !confirm(
+          `${file.name} は ${pageCount}ページあります。\n` +
+            "変換に時間がかかる可能性があります。続行しますか？"
+        )
+      ) {
+        return images; // finallyブロックがdestroy()を呼ぶため、ここでは呼ばない
+      }
 
-      setProcessStatus(
-        `${file.name} - ${i} / ${pageCount} ページ目を変換中...`
+      for (let i = 1; i <= pageCount; i++) {
+        if (targetPages && !targetPages.has(i)) continue;
+        if (processingCancelledRef.current) break;
+
+        setProcessStatus(
+          `${file.name} - ${i} / ${pageCount} ページ目を変換中...`
+        );
+        let page;
+        try {
+          page = await pdf.getPage(i);
+          const shouldCancel = () => processingCancelledRef.current;
+          const { canvas, warning } = page.isPureXfa
+            ? await renderXfaPage(page, shouldCancel)
+            : await renderPdfPageWithFallback(page, shouldCancel);
+          const originalDataUrl = canvas.toDataURL("image/png", 1.0);
+          const estimatedSize = Math.round((originalDataUrl.length * 3) / 4);
+
+          images.push({
+            id: generateId(),
+            name: `${file.name.replace(/\.pdf$/i, "")}_page_${i}.png`,
+            originalName: file.name,
+            originalSrc: originalDataUrl,
+            src: originalDataUrl,
+            type: "image/png",
+            size: estimatedSize,
+            originalSize: estimatedSize,
+            isPdfPage: true,
+            pageNumber: i,
+            renderWarning: warning
+          });
+        } catch (error) {
+          if (error instanceof ProcessingCancelledError) break;
+          console.error(`PDF page ${i} conversion failed:`, error);
+          failedPages.push(i);
+        } finally {
+          page?.cleanup();
+        }
+      }
+    } finally {
+      // destroy()はここ1箇所だけで呼ぶ（早期リターン時も含めて確実に解放）
+      await loadingTask.destroy();
+    }
+
+    if (failedPages.length > 0) {
+      alert(
+        `${file.name}\n${failedPages.join(", ")}ページ目を変換できませんでした。` +
+          "\nその他のページは正常に取り込みました。"
       );
-      const page = await pdf.getPage(i);
-
-      const scale = 2.0;
-      const viewport = page.getViewport({ scale });
-
-      const canvas = document.createElement("canvas");
-      const context = canvas.getContext("2d");
-      canvas.height = viewport.height;
-      canvas.width = viewport.width;
-
-      await page.render({
-        canvasContext: context,
-        viewport: viewport
-      }).promise;
-
-      const originalDataUrl = canvas.toDataURL("image/png", 1.0);
-      const estimatedSize = Math.round((originalDataUrl.length * 3) / 4);
-
-      images.push({
-        id: generateId(),
-        name: `${file.name.replace(".pdf", "")}_page_${i}.png`,
-        originalName: file.name,
-        originalSrc: originalDataUrl,
-        src: originalDataUrl,
-        type: "image/png",
-        size: estimatedSize,
-        originalSize: estimatedSize,
-        isPdfPage: true,
-        pageNumber: i
-      });
     }
     return images;
   };
@@ -1338,6 +2391,239 @@ export default function App() {
         });
       };
       reader.readAsDataURL(file);
+    });
+  };
+
+  const convertDocxToImages = async (file, onProgress) => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = async (e) => {
+        const arrayBuffer = e.target.result;
+
+        // 一時的なコンテナを作成し、画面外に配置する
+        const container = document.createElement("div");
+        container.style.position = "fixed";
+        container.style.left = "-9999px";
+        container.style.top = "-9999px";
+        container.style.width = "850px"; // A4幅相当の目安
+        container.style.background = "#ffffff";
+        container.style.padding = "40px";
+        container.style.boxSizing = "border-box";
+        document.body.appendChild(container);
+
+        try {
+          // docx-previewでDOMにレンダリングする
+          await renderDocxAsync(arrayBuffer, container, null, {
+            inWrapper: true,
+            ignoreWidth: false,
+            ignoreHeight: false,
+            ignoreFonts: false,
+            breakPages: true // ページ分割を有効にする
+          });
+
+          // リソースやフォントの読み込み待機用バッファ
+          await new Promise((r) => setTimeout(r, 1000));
+
+          // ページごとの要素（通常は section.docx）を抽出する
+          let pageElements = container.querySelectorAll("section.docx");
+          if (pageElements.length === 0) {
+            // クラス名が異なる場合のフォールバック（ラッパー直下の子要素）
+            const wrapper = container.querySelector(".docx-wrapper");
+            if (wrapper) {
+              pageElements = wrapper.querySelectorAll(":scope > section");
+            }
+          }
+
+          const images = [];
+
+          if (pageElements && pageElements.length > 0) {
+            // 各ページを個別に画像化する
+            for (let i = 0; i < pageElements.length; i++) {
+              if (onProgress) {
+                onProgress(i + 1, pageElements.length);
+              }
+              const pageEl = pageElements[i];
+
+              // html2canvasで各ページ要素を画像化する
+              const canvas = await html2canvas(pageEl, {
+                scale: 1.5,
+                useCORS: true,
+                backgroundColor: "#ffffff",
+                logging: false
+              });
+
+              const dataUrl = canvas.toDataURL("image/png", 1.0);
+              const estimatedSize = Math.round((dataUrl.length * 3) / 4);
+
+              images.push({
+                id: generateId(),
+                name: `${file.name.replace(/\.docx$/i, "")}_page_${i + 1}.png`,
+                originalName: file.name,
+                originalSrc: dataUrl,
+                src: dataUrl,
+                type: "image/png",
+                size: estimatedSize,
+                originalSize: file.size,
+                isPdfPage: true,
+                pageNumber: i + 1
+              });
+            }
+          } else {
+            // ページ要素が抽出できなかった場合は、全体を1枚として処理（フォールバック）
+            if (onProgress) {
+              onProgress(1, 1);
+            }
+            const canvas = await html2canvas(container, {
+              scale: 1.5,
+              useCORS: true,
+              backgroundColor: "#ffffff",
+              logging: false
+            });
+
+            const dataUrl = canvas.toDataURL("image/png", 1.0);
+            const estimatedSize = Math.round((dataUrl.length * 3) / 4);
+
+            images.push({
+              id: generateId(),
+              name: file.name.replace(/\.docx$/i, "") + ".png",
+              originalName: file.name,
+              originalSrc: dataUrl,
+              src: dataUrl,
+              type: "image/png",
+              size: estimatedSize,
+              originalSize: file.size,
+              isPdfPage: false
+            });
+          }
+
+          // 一時要素を削除
+          document.body.removeChild(container);
+          resolve(images);
+        } catch (err) {
+          if (container.parentNode) {
+            document.body.removeChild(container);
+          }
+          reject(err);
+        }
+      };
+      reader.onerror = (err) => reject(err);
+      reader.readAsArrayBuffer(file);
+    });
+  };
+
+  const convertXlsxToImages = async (file, onProgress) => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = async (e) => {
+        const data = new Uint8Array(e.target.result);
+        let container = null;
+        try {
+          const workbook = XLSX.read(data, { type: "array" });
+          const sheetNames = workbook.SheetNames;
+          const images = [];
+
+          // 一時コンテナの作成
+          container = document.createElement("div");
+          container.style.position = "fixed";
+          container.style.left = "-9999px";
+          container.style.top = "-9999px";
+          container.style.background = "#ffffff";
+          container.style.padding = "30px";
+          container.style.boxSizing = "border-box";
+          container.style.width = "1000px"; // Excelの表が収まりやすいように広め
+          document.body.appendChild(container);
+
+          for (let i = 0; i < sheetNames.length; i++) {
+            if (onProgress) {
+              onProgress(i + 1, sheetNames.length);
+            }
+            const sheetName = sheetNames[i];
+            const worksheet = workbook.Sheets[sheetName];
+
+            // 簡易的に空のシートかどうか確認
+            const ref = worksheet["!ref"];
+            if (!ref) continue; // データがないシートはスキップ
+
+            const htmlTable = XLSX.utils.sheet_to_html(worksheet);
+
+            // シートタイトルとテーブルをコンテナに描画
+            container.innerHTML = `
+              <div class="excel-sheet-render" style="font-family: 'Segoe UI', Meiryo, sans-serif; color: #333333; margin-bottom: 20px;">
+                <h2 style="font-size: 18px; color: #107c41; border-bottom: 2px solid #107c41; padding-bottom: 6px; margin: 0 0 15px 0; display: flex; align-items: center; font-weight: 600;">
+                  <span style="background: #107c41; color: white; padding: 2px 8px; border-radius: 4px; font-size: 12px; margin-right: 8px;">SHEET</span>
+                  ${sheetName}
+                </h2>
+                <div style="overflow-x: auto; width: 100%; border: 1px solid #e1e1e1; border-radius: 4px; background: #ffffff; padding: 10px; box-sizing: border-box;">
+                  ${htmlTable}
+                </div>
+              </div>
+            `;
+
+            // スタイルの自動適用（Excel風の罫線とデザイン）
+            const tables = container.querySelectorAll("table");
+            tables.forEach((t) => {
+              t.style.borderCollapse = "collapse";
+              t.style.width = "100%";
+              t.style.fontSize = "13px";
+              t.style.fontFamily = "sans-serif";
+
+              const tds = t.querySelectorAll("td");
+              tds.forEach((td) => {
+                td.style.border = "1px solid #d0d0d0";
+                td.style.padding = "6px 8px";
+                td.style.minWidth = "60px";
+                // 数値セルの右寄せ補正
+                if (/^[0-9,.\-%\\$]+$/.test(td.textContent.trim())) {
+                  td.style.textAlign = "right";
+                }
+              });
+
+              const ths = t.querySelectorAll("th");
+              ths.forEach((th) => {
+                th.style.border = "1px solid #d0d0d0";
+                th.style.padding = "6px 8px";
+                th.style.backgroundColor = "#f3f3f3";
+                th.style.fontWeight = "bold";
+              });
+            });
+
+            // html2canvasでシートを画像化
+            const canvas = await html2canvas(container, {
+              scale: 1.5,
+              useCORS: true,
+              backgroundColor: "#ffffff",
+              logging: false
+            });
+
+            const dataUrl = canvas.toDataURL("image/png", 1.0);
+            const estimatedSize = Math.round((dataUrl.length * 3) / 4);
+
+            images.push({
+              id: generateId(),
+              name: `${file.name.replace(/\.xlsx?$/i, "")}_${sheetName}.png`,
+              originalName: file.name,
+              originalSrc: dataUrl,
+              src: dataUrl,
+              type: "image/png",
+              size: estimatedSize,
+              originalSize: file.size,
+              isPdfPage: true,
+              pageNumber: i + 1,
+              sheetName: sheetName
+            });
+          }
+
+          document.body.removeChild(container);
+          resolve(images);
+        } catch (err) {
+          if (container?.parentNode) {
+            document.body.removeChild(container);
+          }
+          reject(err);
+        }
+      };
+      reader.onerror = (err) => reject(err);
+      reader.readAsArrayBuffer(file);
     });
   };
 
@@ -1412,9 +2698,21 @@ export default function App() {
     const zip = new JSZip();
     const folder = zip.folder("converted_images");
 
+    const usedNames = new Set();
     files.forEach((file) => {
       const data = file.src.split(",")[1];
-      folder.file(getSafeName(file), data, { base64: true });
+      const safeName = getSafeName(file);
+      const dotIndex = safeName.lastIndexOf(".");
+      const base = dotIndex > 0 ? safeName.slice(0, dotIndex) : safeName;
+      const ext = dotIndex > 0 ? safeName.slice(dotIndex) : "";
+      let uniqueName = safeName;
+      let suffix = 2;
+      while (usedNames.has(uniqueName.toLocaleLowerCase())) {
+        uniqueName = `${base}_${suffix}${ext}`;
+        suffix += 1;
+      }
+      usedNames.add(uniqueName.toLocaleLowerCase());
+      folder.file(uniqueName, data, { base64: true });
     });
 
     const content = await zip.generateAsync({ type: "blob" });
@@ -1430,10 +2728,26 @@ export default function App() {
     setProcessStatus("PDFを作成中...");
 
     try {
+      const userPermissions = ["modify", "copy"];
+      if (!pdfBlockPrinting) {
+        userPermissions.push("print");
+      }
+
+      const encryptionOptions = pdfPassword.trim()
+        ? {
+            encryption: {
+              userPassword: pdfPassword,
+              ownerPassword: pdfPassword + "_owner_bypass_prevent", // ownerPasswordを別にして管理者バイパスを防ぐ
+              userPermissions: userPermissions
+            }
+          }
+        : {};
+
       const doc = new jsPDF({
         orientation: "p",
         unit: "px",
-        format: "a4"
+        format: "a4",
+        ...encryptionOptions
       });
 
       doc.deletePage(1);
@@ -1645,6 +2959,56 @@ export default function App() {
                 className="page-input w-full bg-white border border-orange-200 text-gray-800 text-sm rounded-lg focus:ring-orange-500 focus:border-orange-500 block p-2.5 shadow-sm"
               />
             </div>
+
+            {/* PDF Output Password */}
+            {targetFormat === "application/pdf" && (
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-orange-800">
+                  PDF出力パスワード
+                </label>
+                <div className="relative">
+                  <input
+                    type={showPassword ? "text" : "password"}
+                    placeholder="保護用パスワードを入力"
+                    value={pdfPassword}
+                    onChange={(e) => setPdfPassword(e.target.value)}
+                    className="w-full bg-white border border-orange-200 text-gray-800 text-sm rounded-lg focus:ring-orange-500 focus:border-orange-500 block p-2.5 pr-10 shadow-sm font-mono"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute inset-y-0 right-0 pr-3 flex items-center text-orange-400 hover:text-orange-600 transition-colors"
+                  >
+                    {showPassword ? (
+                      <EyeOff className="w-4 h-4" />
+                    ) : (
+                      <Eye className="w-4 h-4" />
+                    )}
+                  </button>
+                </div>
+
+                {/* Print blocking option */}
+                <div className="flex items-center space-x-2 mt-1.5">
+                  <input
+                    type="checkbox"
+                    id="blockPrint"
+                    disabled={!pdfPassword.trim()}
+                    checked={pdfPassword.trim() ? pdfBlockPrinting : false}
+                    onChange={(e) => setPdfBlockPrinting(e.target.checked)}
+                    className="w-4 h-4 text-orange-600 bg-white border-orange-200 rounded focus:ring-orange-500 focus:ring-offset-white disabled:opacity-50"
+                  />
+                  <label
+                    htmlFor="blockPrint"
+                    className={`text-xs font-medium select-none cursor-pointer ${
+                      pdfPassword.trim() ? "text-orange-950" : "text-gray-400"
+                    }`}
+                  >
+                    印刷を禁止する
+                    {!pdfPassword.trim() && <span className="text-[10px] ml-1 text-gray-400 font-normal">※パスワード設定時のみ有効</span>}
+                  </label>
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
@@ -1686,7 +3050,10 @@ export default function App() {
                   type="number"
                   min="0"
                   value={renameStartNum}
-                  onChange={(e) => setRenameStartNum(parseInt(e.target.value) || 1)}
+                  onChange={(e) => {
+                    const value = Number.parseInt(e.target.value, 10);
+                    setRenameStartNum(Number.isNaN(value) ? 1 : value);
+                  }}
                   className="w-full bg-white border border-orange-200 text-gray-800 text-sm rounded-lg focus:ring-orange-500 focus:border-orange-500 block p-2 shadow-sm"
                 />
               </div>
@@ -1762,7 +3129,7 @@ export default function App() {
             id="fileInput"
             className="hidden"
             multiple
-            accept="image/*,.pdf,.heic"
+            accept="image/*,.pdf,.heic,.docx"
             onChange={handleFileSelect}
           />
 
@@ -1793,6 +3160,17 @@ export default function App() {
               <p className="text-orange-600 font-medium animate-pulse">
                 {processStatus}
               </p>
+              {canCancelProcessing && (
+                <button
+                  type="button"
+                  onClick={cancelProcessing}
+                  disabled={isCancelling}
+                  className="flex items-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-4 py-2 text-sm font-semibold text-red-600 transition-colors hover:bg-red-100 disabled:cursor-wait disabled:opacity-60"
+                >
+                  <X className="h-4 w-4" />
+                  {isCancelling ? "停止中..." : "処理をキャンセル"}
+                </button>
+              )}
             </div>
           </div>
         )}
@@ -1814,12 +3192,25 @@ export default function App() {
               </button>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-              {files.map((file, index) => (
-                <div
-                  key={file.id}
-                  className="group relative bg-white rounded-xl overflow-hidden border border-orange-200 hover:border-orange-500/50 transition-all shadow-lg hover:shadow-xl hover:shadow-orange-500/10 flex flex-col animate-fadeIn"
-                >
+            <p className="text-sm text-orange-700 bg-orange-100/70 border border-orange-200 rounded-lg px-3 py-2">
+              <GripVertical className="inline w-4 h-4 mr-1 -mt-0.5" />
+              ハンドルをドラッグして順番を変更できます。スマホでは長押しして移動してください。
+            </p>
+
+            <DndContext
+              sensors={sensors}
+              collisionDetection={closestCenter}
+              onDragEnd={handleDragEnd}
+            >
+              <SortableContext
+                items={files.map((file) => file.id)}
+                strategy={rectSortingStrategy}
+              >
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+                  {files.map((file, index) => (
+                    <SortableFileCard key={file.id} id={file.id}>
+                      {({ attributes, listeners, isDragging }) => (
+                        <>
                   {/* Image Preview & Controls */}
                   <div className="aspect-[3/2] bg-orange-100/50 relative overflow-hidden shrink-0">
                     <div className="absolute inset-0 bg-[url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI4IiBoZWlnaHQ9IjgiPgo8cmVjdCB3aWR0aD0iOCIgaGVpZ2h0PSI4IiBmaWxsPSIjZmZmN2VkIi8+CjxyZWN0IHdpZHRoPSI0IiBoZWlnaHQ9IjgiIGZpbGw9IiNmZWQ3YWEiLz4KPHJlY3QgeD0iNCIgeT0iNCIgd2lkdGg9IjQiIGhlaWdodD0iNCIgZmlsbD0iI2ZlZDdhYSIvPgo8L3N2Zz4=')] opacity-50"></div>
@@ -1828,6 +3219,22 @@ export default function App() {
                       alt={file.name}
                       className="absolute inset-0 w-full h-full object-contain p-4 transition-transform duration-500 group-hover:scale-105"
                     />
+
+                    <button
+                      type="button"
+                      {...attributes}
+                      {...listeners}
+                      aria-label={`${index + 1}番目の画像を並び替え`}
+                      className={`absolute bottom-2 left-1/2 -translate-x-1/2 z-30 flex items-center gap-1 px-3 py-1.5 rounded-full border text-xs font-bold shadow-md select-none touch-none transition-colors ${
+                        isDragging
+                          ? "bg-orange-600 border-orange-600 text-white cursor-grabbing"
+                          : "bg-white/95 border-orange-300 text-orange-700 cursor-grab hover:bg-orange-500 hover:text-white"
+                      }`}
+                      title="ドラッグして並び替え"
+                    >
+                      <GripVertical className="w-4 h-4" />
+                      移動
+                    </button>
 
                     {/* Left/Right Reordering Controls */}
                     <div className="absolute bottom-2 left-2 flex space-x-1 opacity-0 group-hover:opacity-100 transition-opacity z-10">
@@ -1868,7 +3275,10 @@ export default function App() {
                     </div>
 
                     {/* Badge */}
-                    <div className="absolute top-2 right-2">
+                    <div className="absolute top-2 right-2 flex flex-col items-end gap-1 z-10">
+                      <span className="bg-gray-900 text-white text-xs font-bold min-w-8 h-8 px-2 rounded-full shadow flex items-center justify-center">
+                        {index + 1}
+                      </span>
                       {file.isPdfPage ? (
                         <span className="bg-red-500 text-white text-[10px] font-bold px-2 py-1 rounded shadow-sm">
                           P.{file.pageNumber}
@@ -1918,6 +3328,15 @@ export default function App() {
 
                   {/* Info Area with Input */}
                   <div className="p-3 bg-white flex flex-col justify-between flex-grow">
+                    {file.renderWarning && (
+                      <div
+                        className="mb-3 flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-2 text-xs leading-relaxed text-amber-800"
+                        role="status"
+                      >
+                        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                        <span>{file.renderWarning}</span>
+                      </div>
+                    )}
                     <div className="flex items-center space-x-2 mb-2 w-full">
                       <Pencil className="w-4 h-4 text-orange-400 flex-shrink-0" />
                       <div className="flex-grow min-w-0">
@@ -1951,9 +3370,13 @@ export default function App() {
                       </span>
                     </div>
                   </div>
+                        </>
+                      )}
+                    </SortableFileCard>
+                  ))}
                 </div>
-              ))}
-            </div>
+              </SortableContext>
+            </DndContext>
           </div>
         )}
 

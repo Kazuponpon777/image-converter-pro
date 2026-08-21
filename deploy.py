@@ -2,10 +2,10 @@ import os
 import sys
 from ftplib import FTP, error_perm
 
-FTP_HOST = "yashimaltd.sakura.ne.jp"
-FTP_USER = "ftp_yashima@yashimaltd.com"
-FTP_PASS = "adlae3dEdaad3d"
-REMOTE_ROOT = "lp.yashimaltd.com/converter"
+FTP_HOST = os.environ.get("FTP_HOST", "yashimaltd.sakura.ne.jp")
+FTP_USER = os.environ.get("FTP_USER")
+FTP_PASS = os.environ.get("FTP_PASS")
+REMOTE_ROOT = os.environ.get("FTP_REMOTE_ROOT", "lp.yashimaltd.com/converter")
 LOCAL_DIR = "./dist"
 
 def make_dirs_recursive(ftp, path):
@@ -40,6 +40,15 @@ def upload_directory(ftp, local_dir, remote_dir):
                 ftp.storbinary(f"STOR {remote_path}", f)
 
 def main():
+    missing = [
+        name
+        for name, value in (("FTP_USER", FTP_USER), ("FTP_PASS", FTP_PASS))
+        if not value
+    ]
+    if missing:
+        print(f"Error: Missing required environment variables: {', '.join(missing)}")
+        sys.exit(1)
+
     if not os.path.exists(LOCAL_DIR):
         print(f"Error: Local build directory '{LOCAL_DIR}' does not exist. Please run 'npm run build' first.")
         sys.exit(1)
