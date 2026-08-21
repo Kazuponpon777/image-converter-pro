@@ -1,3 +1,12 @@
+/**
+ * ============================================================
+ *  AI組織型コードレビュー済み
+ *  レビュー日: 2026-08-21
+ *  レビュー部署: バグチェック部 / セキュリティ部 / 改善提案部
+ *  統合修正: 開発部
+ * ============================================================
+ */
+
 import React, { useState, useEffect, useRef } from "react";
 import * as pdfjsLib from "pdfjs-dist";
 import { jsPDF } from "jspdf";
@@ -90,6 +99,55 @@ class ProcessingCancelledError extends Error {
 }
 
 const generateId = () => crypto.randomUUID();
+
+// [修正] バグチェック部指摘: 画像の安全な非同期ロードヘルパー（onerror漏れによるフリーズ防止）
+const loadImageAsync = (src) => {
+  return new Promise((resolve, reject) => {
+    if (!src) {
+      reject(new Error("画像ソースが指定されていません。"));
+      return;
+    }
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("画像の読み込みに失敗しました。ファイルが破損している可能性があります。"));
+    img.src = src;
+  });
+};
+
+// [修正] セキュリティ部・バグチェック部指摘: HTMLエスケープヘルパー（XSS防止）
+const escapeHtml = (str) => {
+  if (str == null) return "";
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+};
+
+// [修正] バグチェック部指摘: Data URLから安全にBlobを生成する関数
+const dataURLtoBlob = (dataurl) => {
+  if (!dataurl || typeof dataurl !== "string") {
+    throw new Error("有効なData URLが渡されていません。");
+  }
+  const parts = dataurl.split(",");
+  if (parts.length < 2) {
+    throw new Error("Data URLの形式が不正です。");
+  }
+  const match = parts[0].match(/:(.*?);/);
+  const mime = match ? match[1] : "image/png";
+  try {
+    const bstr = atob(parts[1]);
+    let n = bstr.length;
+    const u8arr = new Uint8Array(n);
+    while (n--) {
+      u8arr[n] = bstr.charCodeAt(n);
+    }
+    return new Blob([u8arr], { type: mime });
+  } catch (e) {
+    throw new Error("Base64データのデコードに失敗しました: " + e.message);
+  }
+};
 
 const canvasHasVisibleContent = (canvas) => {
   const sample = document.createElement("canvas");
@@ -497,8 +555,22 @@ const ImageEditor = ({ file, onSave, onClose }) => {
     return { lines, fontSize, lineHeight, p, maxWidth, totalHeight };
   };
 
+  // [修正] バグチェック部指摘: ディープコピー関数（Undo時のオブジェクト・配列参照共有バグ防止）
+  const cloneElements = (els) =>
+    els.map((el) => ({
+      ...el,
+      points: el.points ? el.points.map((p) => ({ ...p })) : undefined
+    }));
+
+  const pushHistory = (currentElements) => {
+    setHistory((prev) => [...prev.slice(-19), cloneElements(currentElements)]);
+  };
+
   // Draw text element supporting multiline & za-buton (background fill)
   const drawTextElement = (ctx, el) => {
+    // [修正] バグチェック部指摘: 空文字または空白のみのテキストはゴミ描画防止のためスキップ
+    if (!el.text || !el.text.trim()) return;
+
     const { lines, fontSize, lineHeight, p, maxWidth, totalHeight } = getTextMetrics(ctx, el);
 
     ctx.font = `bold ${fontSize}px "Inter", "Noto Sans JP", -apple-system, sans-serif`;
@@ -830,7 +902,7 @@ const ImageEditor = ({ file, onSave, onClose }) => {
         setSelectedId(null);
       }
     } else if (tool === "brush") {
-      setHistory((prev) => [...prev, elements]);
+      pushHistory(elements);
       const newEl = {
         id: generateId(),
         type: "brush",
@@ -841,7 +913,7 @@ const ImageEditor = ({ file, onSave, onClose }) => {
       setElements((prev) => [...prev, newEl]);
       activeShapeId.current = newEl.id;
     } else if (tool === "rect") {
-      setHistory((prev) => [...prev, elements]);
+      pushHistory(elements);
       const newEl = {
         id: generateId(),
         type: "rect",
@@ -858,7 +930,7 @@ const ImageEditor = ({ file, onSave, onClose }) => {
       isDrawingShape.current = true;
       dragStartPos.current = pos;
     } else if (tool === "circle") {
-      setHistory((prev) => [...prev, elements]);
+      pushHistory(elements);
       const newEl = {
         id: generateId(),
         type: "circle",
@@ -874,7 +946,7 @@ const ImageEditor = ({ file, onSave, onClose }) => {
       isDrawingShape.current = true;
       dragStartPos.current = pos;
     } else if (tool === "stamp") {
-      setHistory((prev) => [...prev, elements]);
+      pushHistory(elements);
       const text =
         stampType === "approved"
           ? "承認"
@@ -1033,7 +1105,7 @@ const ImageEditor = ({ file, onSave, onClose }) => {
       return;
     }
 
-    setHistory((prev) => [...prev, elements]);
+    pushHistory(elements);
 
     if (editingTextState.id) {
       // Update existing
@@ -1082,7 +1154,7 @@ const ImageEditor = ({ file, onSave, onClose }) => {
 
   const deleteSelectedElement = () => {
     if (!selectedId) return;
-    setHistory((prev) => [...prev, elements]);
+    pushHistory(elements);
     setElements((prev) => prev.filter((el) => el.id !== selectedId));
     setSelectedId(null);
     if (editingTextState && editingTextState.id === selectedId) {
@@ -1916,25 +1988,35 @@ export default function App() {
     await processFiles(selectedFiles);
   };
 
-  const parsePageRange = (rangeStr) => {
-    if (!rangeStr.trim()) return null;
+  // [修正] バグチェック部指摘: 範囲逆順救済・最大ページ制限・0以下除外によるフリーズ防止
+  const parsePageRange = (rangeStr, maxPages = 5000) => {
+    if (!rangeStr || !rangeStr.trim()) return null;
     const pages = new Set();
     const parts = rangeStr.split(",");
 
     parts.forEach((part) => {
-      const range = part.trim().split("-");
+      const trimmed = part.trim();
+      if (!trimmed) return;
+      const range = trimmed.split("-");
       if (range.length === 2) {
-        const start = parseInt(range[0]);
-        const end = parseInt(range[1]);
+        let start = parseInt(range[0], 10);
+        let end = parseInt(range[1], 10);
         if (!isNaN(start) && !isNaN(end)) {
+          if (start > end) [start, end] = [end, start]; // 逆順入力の救済 (例: 5-1 -> 1-5)
+          start = Math.max(1, start);
+          end = Math.min(maxPages, end);
+          // 最大1000ページの展開制限を設けてブラウザフリーズを防止
+          if (end - start > 1000) end = start + 1000;
           for (let i = start; i <= end; i++) pages.add(i);
         }
       } else {
-        const page = parseInt(part);
-        if (!isNaN(page)) pages.add(page);
+        const page = parseInt(trimmed, 10);
+        if (!isNaN(page) && page > 0 && page <= maxPages) {
+          pages.add(page);
+        }
       }
     });
-    return pages;
+    return pages.size > 0 ? pages : null;
   };
 
   const resizeImage = (
@@ -2008,49 +2090,51 @@ export default function App() {
   };
 
   const rotateImage = async (id, direction) => {
-    // 非同期処理前にファイルデータを同期的に取得しておく（古い参照を避けるため）
     const file = files.find((f) => f.id === id);
     if (!file) return;
 
-    const angle = direction === "left" ? -90 : 90;
+    try {
+      const angle = direction === "left" ? -90 : 90;
 
-    const img = new Image();
-    img.src = file.originalSrc;
-    await new Promise((r) => (img.onload = r));
+      // [修正] バグチェック部指摘: 安全な画像ロード（破損時の永久ハングアップ防止）
+      const img = await loadImageAsync(file.originalSrc);
 
-    const canvas = document.createElement("canvas");
-    canvas.width = img.height;
-    canvas.height = img.width;
+      const canvas = document.createElement("canvas");
+      canvas.width = img.height;
+      canvas.height = img.width;
 
-    const ctx = canvas.getContext("2d");
-    ctx.translate(canvas.width / 2, canvas.height / 2);
-    ctx.rotate((angle * Math.PI) / 180);
-    ctx.drawImage(img, -img.width / 2, -img.height / 2);
+      const ctx = canvas.getContext("2d");
+      ctx.translate(canvas.width / 2, canvas.height / 2);
+      ctx.rotate((angle * Math.PI) / 180);
+      ctx.drawImage(img, -img.width / 2, -img.height / 2);
 
-    const newOriginalSrc = canvas.toDataURL("image/png", 1.0);
-    addLog(`Rotating image: ${id}`);
+      const newOriginalSrc = canvas.toDataURL("image/png", 1.0);
+      addLog(`Rotating image: ${id}`);
 
-    const newDisplaySrc = await resizeImage(
-      newOriginalSrc,
-      maxWidth,
-      maxHeight,
-      quality,
-      targetFormat === "application/pdf" ? "image/jpeg" : targetFormat
-    );
+      const newDisplaySrc = await resizeImage(
+        newOriginalSrc,
+        maxWidth,
+        maxHeight,
+        quality,
+        targetFormat === "application/pdf" ? "image/jpeg" : targetFormat
+      );
 
-    // 関数形式のsetFilesで最新のstateを元に更新し、古いクロージャの問題を回避
-    setFiles((prev) =>
-      prev.map((f) =>
-        f.id === id
-          ? {
-              ...f,
-              originalSrc: newOriginalSrc,
-              src: newDisplaySrc,
-              size: Math.round((newDisplaySrc.length * 3) / 4)
-            }
-          : f
-      )
-    );
+      setFiles((prev) =>
+        prev.map((f) =>
+          f.id === id
+            ? {
+                ...f,
+                originalSrc: newOriginalSrc,
+                src: newDisplaySrc,
+                size: Math.round((newDisplaySrc.length * 3) / 4)
+              }
+            : f
+        )
+      );
+    } catch (err) {
+      console.error("Image rotation failed:", err);
+      alert("画像の回転に失敗しました。");
+    }
   };
 
   // Move files (Reordering)
@@ -2075,20 +2159,33 @@ export default function App() {
     });
   };
 
+  // [修正] バグチェック部指摘: クリップボードコピーのPNG形式保証（JPG時のClipboardItemクラッシュ防止）
   const copyToClipboard = async (file) => {
     try {
-      // data: URI に対してfetchを使うと環境によって失敗するため、
-      // 既存のdataURLtoBlobを使ってBlobに変換する
-      const blob = dataURLtoBlob(file.src);
+      let pngBlob;
+      if (file.type === "image/png" && file.src.startsWith("data:image/png")) {
+        pngBlob = dataURLtoBlob(file.src);
+      } else {
+        const img = await loadImageAsync(file.src);
+        const canvas = document.createElement("canvas");
+        canvas.width = img.naturalWidth || img.width;
+        canvas.height = img.naturalHeight || img.height;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0);
+        pngBlob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+      }
+
+      if (!pngBlob) throw new Error("画像データの変換に失敗しました");
+
       await navigator.clipboard.write([
         new ClipboardItem({
-          [blob.type]: blob
+          "image/png": pngBlob
         })
       ]);
       alert("クリップボードにコピーしました！ (Ctrl+Vで貼り付け)");
     } catch (err) {
-      console.error(err);
-      alert("コピーに失敗しました。ブラウザが対応していない可能性があります。");
+      console.error("Clipboard copy error:", err);
+      alert("コピーに失敗しました。ブラウザが対応していないか、セキュリティ制限の可能性があります。");
     }
   };
 
@@ -2123,11 +2220,11 @@ export default function App() {
 
         const newType = targetFormat === "application/pdf" ? "image/jpeg" : targetFormat;
         const ext = targetFormat === "image/png" ? ".png" : ".jpg";
-        const newName = file.userRenamed
-          ? file.name
-          : file.name.replace(/\.[^/.]+$/, "") + ext;
+        // [修正] バグチェック部指摘: userRenamedであっても拡張子は現在のtargetFormatに追従させる
+        const baseWithoutExt = file.name.replace(/\.[^/.]+$/, "");
+        const newName = `${baseWithoutExt}${ext}`;
 
-        if (file.src !== newSrc || file.type !== newType) {
+        if (file.src !== newSrc || file.type !== newType || file.name !== newName) {
           newFiles[i] = {
             ...file,
             src: newSrc,
@@ -2439,6 +2536,10 @@ export default function App() {
           if (pageElements && pageElements.length > 0) {
             // 各ページを個別に画像化する
             for (let i = 0; i < pageElements.length; i++) {
+              // [修正] バグチェック部指摘: Word変換時のキャンセル判定
+              if (processingCancelledRef.current) {
+                throw new ProcessingCancelledError();
+              }
               if (onProgress) {
                 onProgress(i + 1, pageElements.length);
               }
@@ -2470,6 +2571,9 @@ export default function App() {
             }
           } else {
             // ページ要素が抽出できなかった場合は、全体を1枚として処理（フォールバック）
+            if (processingCancelledRef.current) {
+              throw new ProcessingCancelledError();
+            }
             if (onProgress) {
               onProgress(1, 1);
             }
@@ -2534,6 +2638,10 @@ export default function App() {
           document.body.appendChild(container);
 
           for (let i = 0; i < sheetNames.length; i++) {
+            // [修正] バグチェック部指摘: Excel変換時のキャンセル判定
+            if (processingCancelledRef.current) {
+              throw new ProcessingCancelledError();
+            }
             if (onProgress) {
               onProgress(i + 1, sheetNames.length);
             }
@@ -2546,12 +2654,12 @@ export default function App() {
 
             const htmlTable = XLSX.utils.sheet_to_html(worksheet);
 
-            // シートタイトルとテーブルをコンテナに描画
+            // [修正] セキュリティ部指摘: sheetNameのサニタイズ（DOM XSS脆弱性の防止）
             container.innerHTML = `
               <div class="excel-sheet-render" style="font-family: 'Segoe UI', Meiryo, sans-serif; color: #333333; margin-bottom: 20px;">
                 <h2 style="font-size: 18px; color: #107c41; border-bottom: 2px solid #107c41; padding-bottom: 6px; margin: 0 0 15px 0; display: flex; align-items: center; font-weight: 600;">
                   <span style="background: #107c41; color: white; padding: 2px 8px; border-radius: 4px; font-size: 12px; margin-right: 8px;">SHEET</span>
-                  ${sheetName}
+                  ${escapeHtml(sheetName)}
                 </h2>
                 <div style="overflow-x: auto; width: 100%; border: 1px solid #e1e1e1; border-radius: 4px; background: #ffffff; padding: 10px; box-sizing: border-box;">
                   ${htmlTable}
@@ -2637,18 +2745,6 @@ export default function App() {
     }
   };
 
-  const dataURLtoBlob = (dataurl) => {
-    const arr = dataurl.split(",");
-    const mime = arr[0].match(/:(.*?);/)[1];
-    const bstr = atob(arr[1]);
-    let n = bstr.length;
-    const u8arr = new Uint8Array(n);
-    while (n--) {
-      u8arr[n] = bstr.charCodeAt(n);
-    }
-    return new Blob([u8arr], { type: mime });
-  };
-
   const getSafeName = (file) => {
     const ext = file.type === "image/png" ? ".png" : ".jpg";
     if (file.name.toLowerCase().endsWith(ext)) return file.name;
@@ -2700,7 +2796,11 @@ export default function App() {
 
     const usedNames = new Set();
     files.forEach((file) => {
-      const data = file.src.split(",")[1];
+      // [修正] バグチェック部指摘: file.srcの安全なBase64分割
+      const parts = (file.src || "").split(",");
+      const data = parts.length > 1 ? parts[1] : "";
+      if (!data) return;
+
       const safeName = getSafeName(file);
       const dotIndex = safeName.lastIndexOf(".");
       const base = dotIndex > 0 ? safeName.slice(0, dotIndex) : safeName;
@@ -2733,11 +2833,12 @@ export default function App() {
         userPermissions.push("print");
       }
 
+      // [修正] セキュリティ部・バグチェック部指摘: 推測不可能なUUIDによるownerPassword生成
       const encryptionOptions = pdfPassword.trim()
         ? {
             encryption: {
-              userPassword: pdfPassword,
-              ownerPassword: pdfPassword + "_owner_bypass_prevent", // ownerPasswordを別にして管理者バイパスを防ぐ
+              userPassword: pdfPassword.trim(),
+              ownerPassword: crypto.randomUUID(),
               userPermissions: userPermissions
             }
           }
@@ -2754,16 +2855,18 @@ export default function App() {
 
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
-        const img = new Image();
-        img.src = file.src;
-        await new Promise((r) => (img.onload = r));
+        try {
+          // [修正] バグチェック部指摘: 画像の安全なロード（onerror漏れによるフリーズ防止）
+          const img = await loadImageAsync(file.src);
+          const width = img.width;
+          const height = img.height;
 
-        const width = img.width;
-        const height = img.height;
-
-        doc.addPage([width, height], width > height ? "l" : "p");
-        let format = file.type === "image/png" ? "PNG" : "JPEG";
-        doc.addImage(file.src, format, 0, 0, width, height);
+          doc.addPage([width, height], width > height ? "l" : "p");
+          let format = file.type === "image/png" ? "PNG" : "JPEG";
+          doc.addImage(file.src, format, 0, 0, width, height);
+        } catch (imgErr) {
+          console.error(`画像「${file.name}」の読み込みに失敗しました:`, imgErr);
+        }
       }
 
       doc.save(`converted_images_${new Date().getTime()}.pdf`);
@@ -3129,7 +3232,7 @@ export default function App() {
             id="fileInput"
             className="hidden"
             multiple
-            accept="image/*,.pdf,.heic,.docx"
+            accept="image/*,.pdf,.heic,.docx,.xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
             onChange={handleFileSelect}
           />
 
