@@ -67,7 +67,8 @@ import {
   Hand,
   Edit3,
   Sliders,
-  Move
+  Move,
+  Pipette
 } from "lucide-react";
 
 import pdfjsWorker from "pdfjs-dist/build/pdf.worker.min.mjs?url";
@@ -322,6 +323,8 @@ const ImageEditor = ({ file, onSave, onClose }) => {
   const [brushSize, setBrushSize] = useState(25);
   const [fontSize, setFontSize] = useState(40);
   const [useTextBg, setUseTextBg] = useState(true);
+  const [textBgColor, setTextBgColor] = useState("#ffffff"); // 座布団の背景色
+  const [textShowBorder, setTextShowBorder] = useState(true); // 座布団の枠線あり/なし
   const [shapeStyle, setShapeStyle] = useState("fill"); // "fill" | "stroke"
   const [stampType, setStampType] = useState("approved");
   const [stampText, setStampText] = useState("佐藤");
@@ -340,7 +343,27 @@ const ImageEditor = ({ file, onSave, onClose }) => {
   const [selectedId, setSelectedId] = useState(null);
   const [history, setHistory] = useState([]);
 
-  // Text Inline Editing state: { id?: string, text: string, canvasX: number, canvasY: number, fontSize: number, color: string, useBg: boolean }
+  // スポイト機能（EyeDropper API または ネイティブカラーピッカー）
+  const pickColor = async (onColorPicked) => {
+    if (window.EyeDropper) {
+      try {
+        const eyeDropper = new window.EyeDropper();
+        const result = await eyeDropper.open();
+        if (result && result.sRGBHex) {
+          onColorPicked(result.sRGBHex);
+        }
+      } catch {
+        // ユーザーがESC等でキャンセルした場合は何もしない
+      }
+    } else {
+      const input = document.createElement("input");
+      input.type = "color";
+      input.onchange = (e) => onColorPicked(e.target.value);
+      input.click();
+    }
+  };
+
+  // Text Inline Editing state: { id?: string, text: string, canvasX: number, canvasY: number, fontSize: number, color: string, useBg: boolean, bgColor: string, showBorder: boolean }
   const [editingTextState, setEditingTextState] = useState(null);
   const textInputRef = useRef(null);
 
@@ -566,7 +589,7 @@ const ImageEditor = ({ file, onSave, onClose }) => {
     setHistory((prev) => [...prev.slice(-19), cloneElements(currentElements)]);
   };
 
-  // Draw text element supporting multiline & za-buton (background fill)
+  // Draw text element supporting multiline & za-buton (background fill & border options)
   const drawTextElement = (ctx, el) => {
     // [修正] バグチェック部指摘: 空文字または空白のみのテキストはゴミ描画防止のためスキップ
     if (!el.text || !el.text.trim()) return;
@@ -577,16 +600,26 @@ const ImageEditor = ({ file, onSave, onClose }) => {
     ctx.textBaseline = "top";
 
     if (el.useBg) {
+      // 背景色（未指定時は白またはダークグレー）
       ctx.fillStyle = el.bgColor || (el.color === "#ffffff" ? "#111827" : "#ffffff");
+      const hasBorder = el.showBorder !== false; // デフォルトは枠線あり
+
       if (ctx.roundRect) {
         ctx.beginPath();
         ctx.roundRect(el.x - p, el.y - p, maxWidth + p * 2, totalHeight + p * 2, 4);
         ctx.fill();
-        ctx.strokeStyle = el.color === "#ffffff" ? "#374151" : "#d1d5db";
-        ctx.lineWidth = Math.max(1, fontSize * 0.03);
-        ctx.stroke();
+        if (hasBorder) {
+          ctx.strokeStyle = el.borderColor || (el.bgColor === "#000000" ? "#4b5563" : "#d1d5db");
+          ctx.lineWidth = Math.max(1, fontSize * 0.03);
+          ctx.stroke();
+        }
       } else {
         ctx.fillRect(el.x - p, el.y - p, maxWidth + p * 2, totalHeight + p * 2);
+        if (hasBorder) {
+          ctx.strokeStyle = el.borderColor || (el.bgColor === "#000000" ? "#4b5563" : "#d1d5db");
+          ctx.lineWidth = Math.max(1, fontSize * 0.03);
+          ctx.strokeRect(el.x - p, el.y - p, maxWidth + p * 2, totalHeight + p * 2);
+        }
       }
     }
 
@@ -980,7 +1013,9 @@ const ImageEditor = ({ file, onSave, onClose }) => {
         canvasY: pos.y,
         fontSize: fontSize,
         color: color,
-        useBg: useTextBg
+        useBg: useTextBg,
+        bgColor: textBgColor,
+        showBorder: textShowBorder
       });
     }
   };
@@ -1085,7 +1120,9 @@ const ImageEditor = ({ file, onSave, onClose }) => {
         canvasY: hit.y,
         fontSize: hit.fontSize,
         color: hit.color,
-        useBg: hit.useBg
+        useBg: hit.useBg,
+        bgColor: hit.bgColor || "#ffffff",
+        showBorder: hit.showBorder !== false
       });
       setSelectedId(hit.id);
     }
@@ -1117,7 +1154,9 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                 text: editingTextState.text,
                 fontSize: editingTextState.fontSize,
                 color: editingTextState.color,
-                useBg: editingTextState.useBg
+                useBg: editingTextState.useBg,
+                bgColor: editingTextState.bgColor || "#ffffff",
+                showBorder: editingTextState.showBorder !== false
               }
             : el
         )
@@ -1133,7 +1172,9 @@ const ImageEditor = ({ file, onSave, onClose }) => {
         y: editingTextState.canvasY,
         fontSize: editingTextState.fontSize,
         color: editingTextState.color,
-        useBg: editingTextState.useBg
+        useBg: editingTextState.useBg,
+        bgColor: editingTextState.bgColor || "#ffffff",
+        showBorder: editingTextState.showBorder !== false
       };
       setElements((prev) => [...prev, newEl]);
       setSelectedId(newEl.id);
@@ -1384,19 +1425,11 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                     />
                   </div>
 
+                  {/* 文字色 */}
                   <div className="flex items-center justify-between pt-1">
-                    <label className="text-xs text-gray-300 flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={selectedElement.useBg || false}
-                        onChange={(e) => updateSelectedElement({ useBg: e.target.checked })}
-                        className="w-4 h-4 rounded text-blue-600 bg-gray-800 border-gray-700 focus:ring-blue-500"
-                      />
-                      背景座布団をつける
-                    </label>
-
+                    <span className="text-xs text-gray-300">文字色</span>
                     <div className="flex items-center gap-1">
-                      {["#000000", "#ffffff", "#ff0000", "#0000ff"].map((c) => (
+                      {["#000000", "#ffffff", "#ff0000", "#0000ff", "#22c55e"].map((c) => (
                         <button
                           key={c}
                           onClick={() => updateSelectedElement({ color: c })}
@@ -1407,6 +1440,105 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                         />
                       ))}
                     </div>
+                  </div>
+
+                  {/* 背景（座布団）設定 */}
+                  <div className="space-y-2 pt-2 border-t border-blue-800/40">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs text-gray-300 flex items-center gap-2 cursor-pointer font-medium">
+                        <input
+                          type="checkbox"
+                          checked={selectedElement.useBg || false}
+                          onChange={(e) => updateSelectedElement({ useBg: e.target.checked })}
+                          className="w-4 h-4 rounded text-blue-600 bg-gray-800 border-gray-700 focus:ring-blue-500"
+                        />
+                        背景座布団をつける
+                      </label>
+                    </div>
+
+                    {selectedElement.useBg && (
+                      <div className="space-y-2 pl-2 border-l-2 border-blue-500/40 animate-fadeIn">
+                        {/* 枠線のあり/なし */}
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="text-gray-300">枠線</span>
+                          <div className="grid grid-cols-2 gap-1 bg-gray-800 p-0.5 rounded-lg border border-gray-700">
+                            <button
+                              type="button"
+                              onClick={() => updateSelectedElement({ showBorder: true })}
+                              className={`px-2 py-0.5 rounded text-[11px] font-medium transition-colors ${
+                                selectedElement.showBorder !== false
+                                  ? "bg-blue-600 text-white font-bold"
+                                  : "text-gray-400 hover:text-gray-200"
+                              }`}
+                            >
+                              枠あり
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => updateSelectedElement({ showBorder: false })}
+                              className={`px-2 py-0.5 rounded text-[11px] font-medium transition-colors ${
+                                selectedElement.showBorder === false
+                                  ? "bg-blue-600 text-white font-bold"
+                                  : "text-gray-400 hover:text-gray-200"
+                              }`}
+                            >
+                              枠なし
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* 背景色 ＆ スポイト */}
+                        <div className="flex items-center justify-between text-xs pt-1">
+                          <span className="text-gray-300">背景色</span>
+                          <div className="flex items-center gap-1.5">
+                            {/* スポイトボタン */}
+                            <button
+                              type="button"
+                              onClick={() =>
+                                pickColor((picked) =>
+                                  updateSelectedElement({ bgColor: picked })
+                                )
+                              }
+                              title="スポイトで画面から色を取得"
+                              className="flex items-center gap-1 px-2 py-1 bg-gray-800 hover:bg-gray-700 text-orange-400 border border-gray-700 rounded text-[11px] font-medium transition-colors"
+                            >
+                              <Pipette className="w-3.5 h-3.5" />
+                              <span>スポイト</span>
+                            </button>
+
+                            {/* クイック背景色 */}
+                            {["#ffffff", "#fef3c7", "#f3f4f6", "#000000"].map((c) => (
+                              <button
+                                key={c}
+                                type="button"
+                                onClick={() => updateSelectedElement({ bgColor: c })}
+                                className={`w-5 h-5 rounded-full border transition-transform ${
+                                  (selectedElement.bgColor || "#ffffff") === c
+                                    ? "scale-125 ring-2 ring-orange-400"
+                                    : "border-gray-600"
+                                }`}
+                                style={{ backgroundColor: c }}
+                              />
+                            ))}
+
+                            {/* カラーピッカー input */}
+                            <label
+                              title="自由な色を選択"
+                              className="relative cursor-pointer w-5 h-5 rounded-full border border-gray-600 overflow-hidden flex items-center justify-center bg-gradient-to-tr from-red-500 via-green-500 to-blue-500"
+                            >
+                              <input
+                                type="color"
+                                value={selectedElement.bgColor || "#ffffff"}
+                                onChange={(e) =>
+                                  updateSelectedElement({ bgColor: e.target.value })
+                                }
+                                className="opacity-0 absolute inset-0 w-full h-full cursor-pointer"
+                              />
+                            </label>
+                          </div>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
@@ -1557,20 +1689,103 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                 />
               </div>
 
-              <div className="flex items-center space-x-2 pt-1">
-                <input
-                  type="checkbox"
-                  id="textBgDefault"
-                  checked={useTextBg}
-                  onChange={(e) => setUseTextBg(e.target.checked)}
-                  className="w-4 h-4 text-orange-600 bg-gray-800 border-gray-700 rounded focus:ring-orange-500"
-                />
-                <label
-                  htmlFor="textBgDefault"
-                  className="text-xs font-medium text-gray-300 select-none cursor-pointer"
-                >
-                  文字背景を塗りつぶす (座布団)
-                </label>
+              {/* 座布団ON/OFF */}
+              <div className="space-y-2 pt-1">
+                <div className="flex items-center space-x-2">
+                  <input
+                    type="checkbox"
+                    id="textBgDefault"
+                    checked={useTextBg}
+                    onChange={(e) => setUseTextBg(e.target.checked)}
+                    className="w-4 h-4 text-orange-600 bg-gray-800 border-gray-700 rounded focus:ring-orange-500"
+                  />
+                  <label
+                    htmlFor="textBgDefault"
+                    className="text-xs font-medium text-gray-300 select-none cursor-pointer"
+                  >
+                    文字背景を塗りつぶす (座布団)
+                  </label>
+                </div>
+
+                {useTextBg && (
+                  <div className="space-y-2 pl-2 border-l-2 border-orange-500/40 animate-fadeIn">
+                    {/* 枠線のあり/なし */}
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-gray-400">枠線</span>
+                      <div className="grid grid-cols-2 gap-1 bg-gray-800 p-0.5 rounded-lg border border-gray-700">
+                        <button
+                          type="button"
+                          onClick={() => setTextShowBorder(true)}
+                          className={`px-2 py-0.5 rounded text-[11px] font-medium transition-colors ${
+                            textShowBorder
+                              ? "bg-orange-600 text-white font-bold"
+                              : "text-gray-400 hover:text-gray-200"
+                          }`}
+                        >
+                          枠あり
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setTextShowBorder(false)}
+                          className={`px-2 py-0.5 rounded text-[11px] font-medium transition-colors ${
+                            !textShowBorder
+                              ? "bg-orange-600 text-white font-bold"
+                              : "text-gray-400 hover:text-gray-200"
+                          }`}
+                        >
+                          枠なし
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* 背景色 ＆ スポイト */}
+                    <div className="flex items-center justify-between text-xs pt-0.5">
+                      <span className="text-gray-400">背景色</span>
+                      <div className="flex items-center gap-1.5">
+                        {/* スポイトボタン */}
+                        <button
+                          type="button"
+                          onClick={() =>
+                            pickColor((picked) => setTextBgColor(picked))
+                          }
+                          title="スポイトで画面から色を取得"
+                          className="flex items-center gap-1 px-2 py-1 bg-gray-800 hover:bg-gray-750 text-orange-400 border border-gray-700 rounded text-[11px] font-medium transition-colors"
+                        >
+                          <Pipette className="w-3.5 h-3.5" />
+                          <span>スポイト</span>
+                        </button>
+
+                        {/* クイック背景色 */}
+                        {["#ffffff", "#fef3c7", "#f3f4f6", "#000000"].map((c) => (
+                          <button
+                            key={c}
+                            type="button"
+                            onClick={() => setTextBgColor(c)}
+                            className={`w-5 h-5 rounded-full border transition-transform ${
+                              textBgColor === c
+                                ? "scale-125 ring-2 ring-orange-400"
+                                : "border-gray-600"
+                            }`}
+                            style={{ backgroundColor: c }}
+                          />
+                        ))}
+
+                        {/* カラーピッカー */}
+                        <label
+                          title="自由な色を選択"
+                          className="relative cursor-pointer w-5 h-5 rounded-full border border-gray-600 overflow-hidden flex items-center justify-center bg-gradient-to-tr from-red-500 via-green-500 to-blue-500"
+                        >
+                          <input
+                            type="color"
+                            value={textBgColor}
+                            onChange={(e) => setTextBgColor(e.target.value)}
+                            className="opacity-0 absolute inset-0 w-full h-full cursor-pointer"
+                          />
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -1758,32 +1973,136 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                       transform: "translate(-10px, -10px)"
                     }}
                   >
-                    <div className="flex items-center justify-between mb-2 pb-1.5 border-b border-gray-200">
-                      <span className="text-xs font-bold text-gray-800 flex items-center gap-1.5">
-                        <Edit3 className="w-3.5 h-3.5 text-orange-500" />
-                        {editingTextState.id ? "文字を再編集" : "文字を入力"}
-                      </span>
-                      <div className="flex items-center space-x-2">
-                        <span className="text-[11px] text-gray-500 font-mono font-semibold">
-                          {editingTextState.fontSize}px
+                    <div className="flex flex-col gap-2 mb-2 pb-2 border-b border-gray-200">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-bold text-gray-800 flex items-center gap-1.5">
+                          <Edit3 className="w-3.5 h-3.5 text-orange-500" />
+                          {editingTextState.id ? "文字を再編集" : "文字を入力"}
                         </span>
-                        <button
-                          onClick={() =>
-                            setEditingTextState((prev) => ({
-                              ...prev,
-                              useBg: !prev.useBg
-                            }))
-                          }
-                          title="背景座布団の切り替え"
-                          className={`text-[11px] px-2 py-0.5 rounded border transition-colors font-medium ${
-                            editingTextState.useBg
-                              ? "bg-orange-600 border-orange-500 text-white shadow-sm"
-                              : "bg-gray-100 border-gray-300 text-gray-600 hover:bg-gray-200"
-                          }`}
-                        >
-                          座布団
-                        </button>
+                        <div className="flex items-center space-x-2">
+                          <span className="text-[11px] text-gray-500 font-mono font-semibold">
+                            {editingTextState.fontSize}px
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setEditingTextState((prev) => ({
+                                ...prev,
+                                useBg: !prev.useBg
+                              }))
+                            }
+                            title="背景座布団の切り替え"
+                            className={`text-[11px] px-2.5 py-0.5 rounded border transition-colors font-bold ${
+                              editingTextState.useBg
+                                ? "bg-orange-600 border-orange-500 text-white shadow-sm"
+                                : "bg-gray-100 border-gray-300 text-gray-600 hover:bg-gray-200"
+                            }`}
+                          >
+                            座布団
+                          </button>
+                        </div>
                       </div>
+
+                      {/* 座布団がONのときの追加オプション（枠線＆背景色＆スポイト） */}
+                      {editingTextState.useBg && (
+                        <div className="flex items-center justify-between gap-2 p-1.5 bg-gray-50 rounded-lg border border-gray-200 animate-fadeIn text-[11px]">
+                          {/* 枠線あり/なし */}
+                          <div className="flex items-center gap-1">
+                            <span className="text-gray-600 font-medium">枠:</span>
+                            <div className="grid grid-cols-2 gap-0.5 bg-gray-200 p-0.5 rounded border border-gray-300">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setEditingTextState((prev) => ({
+                                    ...prev,
+                                    showBorder: true
+                                  }))
+                                }
+                                className={`px-1.5 py-0.5 rounded text-[10px] font-bold transition-colors ${
+                                  editingTextState.showBorder !== false
+                                    ? "bg-orange-600 text-white"
+                                    : "text-gray-600 hover:text-gray-800"
+                                }`}
+                              >
+                                あり
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setEditingTextState((prev) => ({
+                                    ...prev,
+                                    showBorder: false
+                                  }))
+                                }
+                                className={`px-1.5 py-0.5 rounded text-[10px] font-bold transition-colors ${
+                                  editingTextState.showBorder === false
+                                    ? "bg-orange-600 text-white"
+                                    : "text-gray-600 hover:text-gray-800"
+                                }`}
+                              >
+                                なし
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* 背景色＆スポイト */}
+                          <div className="flex items-center gap-1">
+                            <span className="text-gray-600 font-medium">背景:</span>
+                            {/* スポイトボタン */}
+                            <button
+                              type="button"
+                              onClick={() =>
+                                pickColor((picked) =>
+                                  setEditingTextState((prev) => ({
+                                    ...prev,
+                                    bgColor: picked
+                                  }))
+                                )
+                              }
+                              title="スポイトで画面から色を取得"
+                              className="flex items-center gap-0.5 px-1.5 py-0.5 bg-white hover:bg-orange-50 text-orange-600 border border-orange-300 rounded text-[10px] font-bold transition-colors shadow-xs"
+                            >
+                              <Pipette className="w-3 h-3" />
+                              <span>スポイト</span>
+                            </button>
+
+                            {/* クイック色 */}
+                            {["#ffffff", "#fef3c7", "#f3f4f6", "#000000"].map((c) => (
+                              <button
+                                key={c}
+                                type="button"
+                                onClick={() =>
+                                  setEditingTextState((prev) => ({ ...prev, bgColor: c }))
+                                }
+                                className={`w-4 h-4 rounded-full border transition-transform ${
+                                  (editingTextState.bgColor || "#ffffff") === c
+                                    ? "scale-125 ring-2 ring-orange-500 border-white shadow-xs"
+                                    : "border-gray-300"
+                                }`}
+                                style={{ backgroundColor: c }}
+                              />
+                            ))}
+
+                            {/* カラーピッカー */}
+                            <label
+                              title="自由な色を選択"
+                              className="relative cursor-pointer w-4 h-4 rounded-full border border-gray-300 overflow-hidden flex items-center justify-center bg-gradient-to-tr from-red-500 via-green-500 to-blue-500"
+                            >
+                              <input
+                                type="color"
+                                value={editingTextState.bgColor || "#ffffff"}
+                                onChange={(e) =>
+                                  setEditingTextState((prev) => ({
+                                    ...prev,
+                                    bgColor: e.target.value
+                                  }))
+                                }
+                                className="opacity-0 absolute inset-0 w-full h-full cursor-pointer"
+                              />
+                            </label>
+                          </div>
+                        </div>
+                      )}
                     </div>
 
                     <textarea
