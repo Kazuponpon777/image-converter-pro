@@ -788,12 +788,12 @@ const ImageEditor = ({ file, onSave, onClose }) => {
   // Tools: "select" | "hand" | "brush" | "rect" | "circle" | "text" | "stamp" | "mosaic" | "mask"
   const [tool, setTool] = useState("select");
   const [color, setColor] = useState("#000000");
-  const [brushSize, setBrushSize] = useState(25);
+  const [brushSize, setBrushSize] = useState(6); // 枠線の太さ・ブラシサイズ (初期値6px)
   const [fontSize, setFontSize] = useState(40);
   const [useTextBg, setUseTextBg] = useState(true);
   const [textBgColor, setTextBgColor] = useState("#ffffff"); // 座布団の背景色
   const [textShowBorder, setTextShowBorder] = useState(true); // 座布団の枠線あり/なし
-  const [shapeStyle, setShapeStyle] = useState("fill"); // "fill" | "stroke"
+  const [shapeStyle, setShapeStyle] = useState("stroke"); // 初期値を枠線(LINE)にして文字を囲みやすくする
   const [stampType, setStampType] = useState("approved");
   const [stampText, setStampText] = useState("佐藤");
   const [stampColor, setStampColor] = useState("#ff0000");
@@ -1215,6 +1215,11 @@ const ImageEditor = ({ file, onSave, onClose }) => {
   // Shape drawing states
   const isDrawingShape = useRef(false);
   const activeShapeId = useRef(null);
+
+  // 図形の直接変形ドラッグ用ステート
+  const isResizingElement = useRef(false);
+  const resizeHandleType = useRef(null); // "se" | "sw" | "ne" | "nw" | "r"
+  const resizeStartData = useRef(null);
 
   // Calculate Fit Zoom Scale
   const calculateFitScale = () => {
@@ -1691,10 +1696,40 @@ const ImageEditor = ({ file, onSave, onClose }) => {
             (xMax - xMin) + padding * 2,
             (yMax - yMin) + padding * 2
           );
+
+          // 四角形・楕円の四隅にドラッグ変形ハンドルを描画
+          if (el.type === "rect" || el.type === "ellipse") {
+            const hSize = Math.max(8, Math.min(14, canvas.width * 0.006));
+            ctx.fillStyle = "#ffffff";
+            ctx.strokeStyle = "#2563eb";
+            ctx.lineWidth = 2;
+            ctx.setLineDash([]);
+            const corners = [
+              { x: xMin - padding, y: yMin - padding },
+              { x: xMax + padding, y: yMin - padding },
+              { x: xMin - padding, y: yMax + padding },
+              { x: xMax + padding, y: yMax + padding }
+            ];
+            corners.forEach((c) => {
+              ctx.fillRect(c.x - hSize / 2, c.y - hSize / 2, hSize, hSize);
+              ctx.strokeRect(c.x - hSize / 2, c.y - hSize / 2, hSize, hSize);
+            });
+            ctx.setLineDash([8, 6]);
+          }
         } else if (el.type === "circle") {
           ctx.beginPath();
           ctx.arc(el.x, el.y, el.r + 6, 0, Math.PI * 2);
           ctx.stroke();
+
+          // 正円の右端に変形ハンドルを描画
+          const hSize = Math.max(8, Math.min(14, canvas.width * 0.006));
+          ctx.fillStyle = "#ffffff";
+          ctx.strokeStyle = "#2563eb";
+          ctx.lineWidth = 2;
+          ctx.setLineDash([]);
+          ctx.fillRect(el.x + el.r + 6 - hSize / 2, el.y - hSize / 2, hSize, hSize);
+          ctx.strokeRect(el.x + el.r + 6 - hSize / 2, el.y - hSize / 2, hSize, hSize);
+          ctx.setLineDash([8, 6]);
         } else if (el.type === "brush") {
           const xs = el.points.map((p) => p.x);
           const ys = el.points.map((p) => p.y);
@@ -1921,6 +1956,28 @@ const ImageEditor = ({ file, onSave, onClose }) => {
     );
   };
 
+  // 選択中要素のリサイズハンドル（四隅）の当たり判定
+  const getResizeHandleAtPos = (pos, el) => {
+    if (!el) return null;
+    const padding = 6;
+    const hitRadius = 14;
+
+    if (el.type === "rect" || el.type === "ellipse") {
+      const xMin = Math.min(el.x, el.x + el.w) - padding;
+      const xMax = Math.max(el.x, el.x + el.w) + padding;
+      const yMin = Math.min(el.y, el.y + el.h) - padding;
+      const yMax = Math.max(el.y, el.y + el.h) + padding;
+
+      if (Math.hypot(pos.x - xMax, pos.y - yMax) <= hitRadius) return "se"; // 右下
+      if (Math.hypot(pos.x - xMin, pos.y - yMax) <= hitRadius) return "sw"; // 左下
+      if (Math.hypot(pos.x - xMax, pos.y - yMin) <= hitRadius) return "ne"; // 右上
+      if (Math.hypot(pos.x - xMin, pos.y - yMin) <= hitRadius) return "nw"; // 左上
+    } else if (el.type === "circle") {
+      if (Math.hypot(pos.x - (el.x + el.r + 6), pos.y - el.y) <= hitRadius) return "r";
+    }
+    return null;
+  };
+
   // Pointer Down handler
   const handleStart = (clientX, clientY, button = 0) => {
     // If Space is pressed or Hand tool or Middle click, start pan
@@ -1960,6 +2017,26 @@ const ImageEditor = ({ file, onSave, onClose }) => {
     }
 
     if (tool === "select") {
+      // 選択中要素のリサイズハンドルをつかんだか判定（直接変形ドラッグ開始）
+      if (selectedId) {
+        const curEl = elements.find((e) => e.id === selectedId);
+        const handle = getResizeHandleAtPos(pos, curEl);
+        if (handle) {
+          pushHistory(elements);
+          isResizingElement.current = true;
+          resizeHandleType.current = handle;
+          resizeStartData.current = {
+            pos,
+            origX: curEl.x,
+            origY: curEl.y,
+            origW: curEl.w,
+            origH: curEl.h,
+            origR: curEl.r
+          };
+          return;
+        }
+      }
+
       const hit = detectHitElement(pos);
       if (hit) {
         setSelectedId(hit.id);
@@ -2096,6 +2173,48 @@ const ImageEditor = ({ file, onSave, onClose }) => {
       return;
     }
 
+    if (tool === "select" && isResizingElement.current && selectedId && resizeStartData.current) {
+      const { pos: startPos, origX, origY, origW, origH, origR } = resizeStartData.current;
+      const dx = pos.x - startPos.x;
+      const dy = pos.y - startPos.y;
+      const handle = resizeHandleType.current;
+
+      setElements((prev) =>
+        prev.map((el) => {
+          if (el.id !== selectedId) return el;
+          if (el.type === "rect" || el.type === "ellipse") {
+            let newX = origX;
+            let newY = origY;
+            let newW = origW;
+            let newH = origH;
+
+            if (handle === "se") {
+              newW = origW + dx;
+              newH = origH + dy;
+            } else if (handle === "sw") {
+              newX = origX + dx;
+              newW = origW - dx;
+              newH = origH + dy;
+            } else if (handle === "ne") {
+              newY = origY + dy;
+              newW = origW + dx;
+              newH = origH - dy;
+            } else if (handle === "nw") {
+              newX = origX + dx;
+              newY = origY + dy;
+              newW = origW - dx;
+              newH = origH - dy;
+            }
+            return { ...el, x: newX, y: newY, w: newW, h: newH };
+          } else if (el.type === "circle" && handle === "r") {
+            return { ...el, r: Math.max(5, origR + dx) };
+          }
+          return el;
+        })
+      );
+      return;
+    }
+
     if (tool === "select" && isDraggingElement.current && selectedId) {
       const dx = pos.x - dragStartPos.current.x;
       const dy = pos.y - dragStartPos.current.y;
@@ -2164,6 +2283,9 @@ const ImageEditor = ({ file, onSave, onClose }) => {
     isPanningRef.current = false;
     isMouseDown.current = false;
     isDraggingElement.current = false;
+    isResizingElement.current = false;
+    resizeHandleType.current = null;
+    resizeStartData.current = null;
     isDrawingShape.current = false;
     isDraggingCrop.current = false;
     activeShapeId.current = null;
@@ -3099,41 +3221,43 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                 </div>
               )}
 
-              {/* Shape specific inspector */}
-              {(selectedElement.type === "rect" || selectedElement.type === "circle") && (
+              {/* Shape specific inspector (四角・丸・楕円のスタイル＆変形調整) */}
+              {(selectedElement.type === "rect" || selectedElement.type === "circle" || selectedElement.type === "ellipse") && (
                 <div className="space-y-3">
                   <div className="grid grid-cols-2 gap-2">
                     <button
-                      onClick={() => updateSelectedElement({ fillMode: "fill" })}
-                      className={`py-1.5 rounded text-xs font-medium border ${
-                        selectedElement.fillMode !== "stroke"
-                          ? "bg-blue-600 border-blue-500 text-white font-bold"
-                          : "bg-gray-800 border-gray-700 text-gray-300"
+                      type="button"
+                      onClick={() => updateSelectedElement({ fillMode: "stroke" })}
+                      className={`py-1.5 rounded text-xs font-medium border transition-colors ${
+                        selectedElement.fillMode === "stroke"
+                          ? "bg-blue-600 border-blue-500 text-white font-bold shadow-sm"
+                          : "bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-750"
                       }`}
                     >
-                      塗りつぶし
+                      ⭕ 枠線のみ (LINE)
                     </button>
                     <button
-                      onClick={() => updateSelectedElement({ fillMode: "stroke" })}
-                      className={`py-1.5 rounded text-xs font-medium border ${
-                        selectedElement.fillMode === "stroke"
-                          ? "bg-blue-600 border-blue-500 text-white font-bold"
-                          : "bg-gray-800 border-gray-700 text-gray-300"
+                      type="button"
+                      onClick={() => updateSelectedElement({ fillMode: "fill" })}
+                      className={`py-1.5 rounded text-xs font-medium border transition-colors ${
+                        selectedElement.fillMode !== "stroke"
+                          ? "bg-blue-600 border-blue-500 text-white font-bold shadow-sm"
+                          : "bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-750"
                       }`}
                     >
-                      枠線のみ
+                      ⬛ 塗りつぶし
                     </button>
                   </div>
 
                   {selectedElement.fillMode === "stroke" && (
                     <div className="space-y-1">
                       <div className="flex justify-between text-xs">
-                        <span className="text-gray-300">枠線の太さ</span>
+                        <span className="text-gray-300">枠線の太さ (LINE)</span>
                         <span className="text-blue-400 font-bold">{selectedElement.brushSize || 5}px</span>
                       </div>
                       <input
                         type="range"
-                        min="2"
+                        min="1"
                         max="60"
                         value={selectedElement.brushSize || 5}
                         onChange={(e) => updateSelectedElement({ brushSize: parseInt(e.target.value) })}
@@ -3142,10 +3266,70 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                     </div>
                   )}
 
+                  {/* サイズ・変形スライダー（幅・高さのクイック調整） */}
+                  {(selectedElement.type === "ellipse" || selectedElement.type === "rect") && (
+                    <div className="space-y-2 pt-1 border-t border-blue-800/40">
+                      <div className="space-y-1">
+                        <div className="flex justify-between text-xs">
+                          <span className="text-gray-300">横幅 (変形)</span>
+                          <span className="text-blue-400 font-bold">{Math.abs(Math.round(selectedElement.w || 0))}px</span>
+                        </div>
+                        <input
+                          type="range"
+                          min="10"
+                          max="1200"
+                          value={Math.abs(selectedElement.w || 50)}
+                          onChange={(e) => {
+                            const val = parseInt(e.target.value);
+                            const sign = (selectedElement.w || 0) < 0 ? -1 : 1;
+                            updateSelectedElement({ w: val * sign });
+                          }}
+                          className="w-full h-1.5 bg-gray-750 rounded-lg appearance-none cursor-pointer"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <div className="flex justify-between text-xs">
+                          <span className="text-gray-300">縦幅 (変形)</span>
+                          <span className="text-blue-400 font-bold">{Math.abs(Math.round(selectedElement.h || 0))}px</span>
+                        </div>
+                        <input
+                          type="range"
+                          min="10"
+                          max="1200"
+                          value={Math.abs(selectedElement.h || 50)}
+                          onChange={(e) => {
+                            const val = parseInt(e.target.value);
+                            const sign = (selectedElement.h || 0) < 0 ? -1 : 1;
+                            updateSelectedElement({ h: val * sign });
+                          }}
+                          className="w-full h-1.5 bg-gray-750 rounded-lg appearance-none cursor-pointer"
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {/* 正円の変形スライダー */}
+                  {selectedElement.type === "circle" && (
+                    <div className="space-y-1 pt-1 border-t border-blue-800/40">
+                      <div className="flex justify-between text-xs">
+                        <span className="text-gray-300">半径 (変形)</span>
+                        <span className="text-blue-400 font-bold">{Math.round(selectedElement.r || 0)}px</span>
+                      </div>
+                      <input
+                        type="range"
+                        min="5"
+                        max="600"
+                        value={selectedElement.r || 30}
+                        onChange={(e) => updateSelectedElement({ r: parseInt(e.target.value) })}
+                        className="w-full h-1.5 bg-gray-750 rounded-lg appearance-none cursor-pointer"
+                      />
+                    </div>
+                  )}
+
                   <div className="flex items-center justify-between pt-1">
                     <span className="text-xs text-gray-300">色</span>
                     <div className="flex items-center gap-1">
-                      {["#000000", "#ffffff", "#ff0000", "#0000ff", "#22c55e"].map((c) => (
+                      {["#ff0000", "#000000", "#ffffff", "#0000ff", "#22c55e", "#f59e0b"].map((c) => (
                         <button
                           key={c}
                           onClick={() => updateSelectedElement({ color: c })}
@@ -3347,18 +3531,18 @@ const ImageEditor = ({ file, onSave, onClose }) => {
           )}
 
           {/* Brush / Shape Thickness Settings */}
-          {(tool === "brush" || ((tool === "rect" || tool === "circle") && shapeStyle === "stroke")) && (
-            <div className="space-y-2">
+          {(tool === "brush" || ((tool === "rect" || tool === "circle" || tool === "ellipse") && shapeStyle === "stroke")) && (
+            <div className="space-y-2 animate-fadeIn">
               <div className="flex justify-between text-xs">
                 <label className="font-bold uppercase tracking-wider text-gray-400">
-                  {tool === "brush" ? "ブラシサイズ" : "線の太さ"}
+                  {tool === "brush" ? "ブラシサイズ" : "枠線の太さ (LINE)"}
                 </label>
                 <span className="text-orange-500 font-bold">{brushSize}px</span>
               </div>
               <input
                 type="range"
-                min="2"
-                max="100"
+                min="1"
+                max="60"
                 value={brushSize}
                 onChange={(e) => setBrushSize(parseInt(e.target.value))}
                 className="w-full h-1.5 bg-gray-750 rounded-lg appearance-none cursor-pointer"
@@ -3366,32 +3550,34 @@ const ImageEditor = ({ file, onSave, onClose }) => {
             </div>
           )}
 
-          {/* Shape Style Selector */}
-          {(tool === "rect" || tool === "circle") && (
+          {/* Shape Style Selector (四角・丸・楕円でLINE/塗りつぶし切り替え) */}
+          {(tool === "rect" || tool === "circle" || tool === "ellipse") && (
             <div className="space-y-2 animate-fadeIn">
               <label className="text-xs font-bold uppercase tracking-wider text-gray-400">
                 図形スタイル
               </label>
               <div className="grid grid-cols-2 gap-2">
                 <button
-                  onClick={() => setShapeStyle("fill")}
-                  className={`py-2 rounded-lg text-xs font-medium border transition-all ${
-                    shapeStyle === "fill"
-                      ? "bg-gray-700 border-gray-600 text-white font-bold"
-                      : "bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-750"
-                  }`}
-                >
-                  塗りつぶし
-                </button>
-                <button
+                  type="button"
                   onClick={() => setShapeStyle("stroke")}
                   className={`py-2 rounded-lg text-xs font-medium border transition-all ${
                     shapeStyle === "stroke"
-                      ? "bg-gray-700 border-gray-600 text-white font-bold"
+                      ? "bg-orange-600 border-orange-500 text-white font-bold shadow-md shadow-orange-600/20"
                       : "bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-750"
                   }`}
                 >
-                  枠線のみ
+                  ⭕ 枠線のみ (LINE)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShapeStyle("fill")}
+                  className={`py-2 rounded-lg text-xs font-medium border transition-all ${
+                    shapeStyle === "fill"
+                      ? "bg-orange-600 border-orange-500 text-white font-bold shadow-md shadow-orange-600/20"
+                      : "bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-750"
+                  }`}
+                >
+                  ⬛ 塗りつぶし
                 </button>
               </div>
             </div>
