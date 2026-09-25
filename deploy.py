@@ -12,6 +12,28 @@ import sys
 from pathlib import Path
 from ftplib import FTP, FTP_TLS, error_perm
 
+# [改善] .env または ../shared.env から環境変数を自動読み込み
+def load_env_file():
+    candidates = [
+        Path(".env"),
+        Path(__file__).parent / ".env",
+        Path(__file__).parent.parent / "shared.env"
+    ]
+    for env_path in candidates:
+        if env_path.is_file():
+            with env_path.open(encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    k, v = line.split("=", 1)
+                    k = k.strip()
+                    v = v.strip().strip("'\"")
+                    if k not in os.environ:
+                        os.environ[k] = v
+
+load_env_file()
+
 # [修正] セキュリティ部指摘: 実ホスト名・パスのハードコードを排除し環境変数を最優先にする
 FTP_HOST = os.environ.get("FTP_HOST", "yashimaltd.sakura.ne.jp")
 FTP_USER = os.environ.get("FTP_USER")
