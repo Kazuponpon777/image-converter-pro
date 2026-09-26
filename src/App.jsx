@@ -57,6 +57,9 @@ import {
   MousePointer,
   Square,
   Circle,
+  ArrowUpRight,
+  MessageSquare,
+  StickyNote,
   GripVertical,
   AlertTriangle,
   Eye,
@@ -892,6 +895,12 @@ const ImageEditor = ({ file, onSave, onClose }) => {
         }
       } else if (el.type === "text") {
         drawTextElement(cleanCtx, el);
+      } else if (el.type === "arrow") {
+        drawArrowElement(cleanCtx, el);
+      } else if (el.type === "callout") {
+        drawCalloutElement(cleanCtx, el);
+      } else if (el.type === "sticky") {
+        drawStickyElement(cleanCtx, el);
       } else if (el.type === "mosaic") {
         const mSize = el.mosaicSize || 16;
         const xMin = Math.min(el.x, el.x + el.w);
@@ -1483,6 +1492,202 @@ const ImageEditor = ({ file, onSave, onClose }) => {
     });
   };
 
+  // 矢印（アロー）の描画
+  const drawArrowElement = (ctx, el) => {
+    const fromX = el.x;
+    const fromY = el.y;
+    const toX = el.x + el.w;
+    const toY = el.y + el.h;
+    const len = Math.hypot(el.w, el.h);
+    if (len < 6) return;
+
+    const angle = Math.atan2(el.h, el.w);
+    const lineWidth = el.brushSize || 6;
+    const headLength = Math.max(16, Math.min(len * 0.45, lineWidth * 3.5));
+    const headWidth = headLength * 0.65;
+
+    ctx.save();
+    ctx.strokeStyle = el.color || "#ff0000";
+    ctx.fillStyle = el.color || "#ff0000";
+    ctx.lineWidth = lineWidth;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+
+    // 矢印の軸線
+    ctx.beginPath();
+    ctx.moveTo(fromX, fromY);
+    const shaftEndX = toX - (headLength * 0.7) * Math.cos(angle);
+    const shaftEndY = toY - (headLength * 0.7) * Math.sin(angle);
+    ctx.lineTo(shaftEndX, shaftEndY);
+    ctx.stroke();
+
+    // 矢じり（三角形）
+    ctx.beginPath();
+    ctx.moveTo(toX, toY);
+    ctx.lineTo(
+      toX - headLength * Math.cos(angle) + headWidth * Math.sin(angle),
+      toY - headLength * Math.sin(angle) - headWidth * Math.cos(angle)
+    );
+    ctx.lineTo(
+      toX - headLength * 0.7 * Math.cos(angle),
+      toY - headLength * 0.7 * Math.sin(angle)
+    );
+    ctx.lineTo(
+      toX - headLength * Math.cos(angle) - headWidth * Math.sin(angle),
+      toY - headLength * Math.sin(angle) + headWidth * Math.cos(angle)
+    );
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  };
+
+  // 吹き出し（スピーチバルーン）の描画（縦横比自由）
+  const drawCalloutElement = (ctx, el) => {
+    const xMin = Math.min(el.x, el.x + el.w);
+    const yMin = Math.min(el.y, el.y + el.h);
+    const w = Math.abs(el.w);
+    const h = Math.abs(el.h);
+    if (w < 20 || h < 20) return;
+
+    ctx.save();
+    const radius = Math.min(12, w * 0.15, h * 0.15);
+    const tailW = Math.min(24, w * 0.25);
+    const tailH = Math.min(20, h * 0.3);
+    const tailDir = el.tailDirection || "bottom-left";
+
+    // 吹き出しのパス構築
+    ctx.beginPath();
+    ctx.moveTo(xMin + radius, yMin);
+
+    // 上辺
+    if (tailDir === "top-left") {
+      ctx.lineTo(xMin + w * 0.2, yMin);
+      ctx.lineTo(xMin + w * 0.15, yMin - tailH);
+      ctx.lineTo(xMin + w * 0.2 + tailW, yMin);
+    } else if (tailDir === "top-right") {
+      ctx.lineTo(xMin + w * 0.7, yMin);
+      ctx.lineTo(xMin + w * 0.85, yMin - tailH);
+      ctx.lineTo(xMin + w * 0.7 + tailW, yMin);
+    }
+    ctx.lineTo(xMin + w - radius, yMin);
+    ctx.arcTo(xMin + w, yMin, xMin + w, yMin + radius, radius);
+
+    // 右辺
+    ctx.lineTo(xMin + w, yMin + h - radius);
+    ctx.arcTo(xMin + w, yMin + h, xMin + w - radius, yMin + h, radius);
+
+    // 下辺
+    if (tailDir === "bottom-right") {
+      ctx.lineTo(xMin + w * 0.7 + tailW, yMin + h);
+      ctx.lineTo(xMin + w * 0.85, yMin + h + tailH);
+      ctx.lineTo(xMin + w * 0.7, yMin + h);
+    } else if (tailDir === "bottom-left") {
+      ctx.lineTo(xMin + w * 0.2 + tailW, yMin + h);
+      ctx.lineTo(xMin + w * 0.15, yMin + h + tailH);
+      ctx.lineTo(xMin + w * 0.2, yMin + h);
+    }
+    ctx.lineTo(xMin + radius, yMin + h);
+    ctx.arcTo(xMin, yMin + h, xMin, yMin + h - radius, radius);
+
+    // 左辺
+    ctx.lineTo(xMin, yMin + radius);
+    ctx.arcTo(xMin, yMin, xMin + radius, yMin, radius);
+    ctx.closePath();
+
+    // 塗りつぶし
+    ctx.fillStyle = el.bgColor || "#ffffff";
+    ctx.shadowColor = "rgba(0, 0, 0, 0.15)";
+    ctx.shadowBlur = 6;
+    ctx.shadowOffsetY = 2;
+    ctx.fill();
+
+    // 枠線
+    ctx.shadowColor = "transparent";
+    ctx.strokeStyle = el.borderColor || el.color || "#000000";
+    ctx.lineWidth = el.brushSize || 3;
+    ctx.stroke();
+
+    // テキストの描画
+    if (el.text && el.text.trim()) {
+      const fSize = el.fontSize || Math.max(14, Math.min(32, Math.round(h * 0.22)));
+      ctx.font = `bold ${fSize}px "Inter", "Noto Sans JP", sans-serif`;
+      ctx.fillStyle = el.color || "#000000";
+      ctx.textBaseline = "middle";
+      ctx.textAlign = "center";
+
+      const lines = el.text.split("\n");
+      const lineHeight = fSize * 1.3;
+      const startY = yMin + h / 2 - ((lines.length - 1) * lineHeight) / 2;
+      lines.forEach((line, idx) => {
+        ctx.fillText(line, xMin + w / 2, startY + idx * lineHeight);
+      });
+    }
+
+    ctx.restore();
+  };
+
+  // 付箋（スティッキーノート）の描画（縦横比自由）
+  const drawStickyElement = (ctx, el) => {
+    const xMin = Math.min(el.x, el.x + el.w);
+    const yMin = Math.min(el.y, el.y + el.h);
+    const w = Math.abs(el.w);
+    const h = Math.abs(el.h);
+    if (w < 20 || h < 20) return;
+
+    ctx.save();
+
+    // ドロップシャドウ
+    ctx.shadowColor = "rgba(0, 0, 0, 0.22)";
+    ctx.shadowBlur = 10;
+    ctx.shadowOffsetX = 3;
+    ctx.shadowOffsetY = 5;
+
+    // 付箋本体
+    ctx.fillStyle = el.bgColor || "#fef08a";
+    if (ctx.roundRect) {
+      ctx.beginPath();
+      ctx.roundRect(xMin, yMin, w, h, 2);
+      ctx.fill();
+    } else {
+      ctx.fillRect(xMin, yMin, w, h);
+    }
+
+    // シャドウリセット
+    ctx.shadowColor = "transparent";
+
+    // 付箋の上部テープ風アクセント
+    ctx.fillStyle = "rgba(0, 0, 0, 0.06)";
+    ctx.fillRect(xMin, yMin, w, Math.min(18, h * 0.15));
+
+    // 繊細な細い枠線
+    ctx.strokeStyle = "rgba(0, 0, 0, 0.12)";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(xMin, yMin, w, h);
+
+    // テキストの描画
+    if (el.text && el.text.trim()) {
+      const fSize = el.fontSize || Math.max(14, Math.min(28, Math.round(h * 0.18)));
+      ctx.font = `500 ${fSize}px "Inter", "Noto Sans JP", -apple-system, sans-serif`;
+      ctx.fillStyle = el.color || "#1f2937";
+      ctx.textBaseline = "top";
+      ctx.textAlign = "left";
+
+      const padX = Math.max(10, w * 0.08);
+      const padY = Math.max(12, h * 0.12);
+      const lines = el.text.split("\n");
+      const lineHeight = fSize * 1.35;
+
+      lines.forEach((line, idx) => {
+        const textY = yMin + padY + idx * lineHeight;
+        if (textY + fSize <= yMin + h) {
+          ctx.fillText(line, xMin + padX, textY, w - padX * 2);
+        }
+      });
+    }
+
+    ctx.restore();
+  };
+
   // Main Canvas drawing routine
   const drawAll = () => {
     const canvas = canvasRef.current;
@@ -1554,6 +1759,12 @@ const ImageEditor = ({ file, onSave, onClose }) => {
         }
       } else if (el.type === "text") {
         drawTextElement(ctx, el);
+      } else if (el.type === "arrow") {
+        drawArrowElement(ctx, el);
+      } else if (el.type === "callout") {
+        drawCalloutElement(ctx, el);
+      } else if (el.type === "sticky") {
+        drawStickyElement(ctx, el);
       } else if (el.type === "stamp") {
         ctx.save();
         ctx.translate(el.x, el.y);
@@ -1684,7 +1895,7 @@ const ImageEditor = ({ file, onSave, onClose }) => {
             maxWidth + p * 2 + 12,
             totalHeight + p * 2 + 12
           );
-        } else if (el.type === "rect" || el.type === "ellipse" || el.type === "mosaic" || el.type === "mask") {
+        } else if (el.type === "rect" || el.type === "ellipse" || el.type === "callout" || el.type === "sticky" || el.type === "mosaic" || el.type === "mask") {
           const padding = 6;
           const xMin = Math.min(el.x, el.x + el.w);
           const xMax = Math.max(el.x, el.x + el.w);
@@ -1697,8 +1908,8 @@ const ImageEditor = ({ file, onSave, onClose }) => {
             (yMax - yMin) + padding * 2
           );
 
-          // 四角形・楕円の四隅にドラッグ変形ハンドルを描画
-          if (el.type === "rect" || el.type === "ellipse") {
+          // 四角形・楕円・吹き出し・付箋の四隅にドラッグ変形ハンドルを描画
+          if (el.type === "rect" || el.type === "ellipse" || el.type === "callout" || el.type === "sticky") {
             const hSize = Math.max(8, Math.min(14, canvas.width * 0.006));
             ctx.fillStyle = "#ffffff";
             ctx.strokeStyle = "#2563eb";
@@ -1716,6 +1927,27 @@ const ImageEditor = ({ file, onSave, onClose }) => {
             });
             ctx.setLineDash([8, 6]);
           }
+        } else if (el.type === "arrow") {
+          const fromX = el.x;
+          const fromY = el.y;
+          const toX = el.x + el.w;
+          const toY = el.y + el.h;
+          ctx.beginPath();
+          ctx.moveTo(fromX, fromY);
+          ctx.lineTo(toX, toY);
+          ctx.stroke();
+
+          // 矢印の始点と先端にドラッグ変形ハンドルを描画
+          const hSize = Math.max(8, Math.min(14, canvas.width * 0.006));
+          ctx.fillStyle = "#ffffff";
+          ctx.strokeStyle = "#2563eb";
+          ctx.lineWidth = 2;
+          ctx.setLineDash([]);
+          [ { x: fromX, y: fromY }, { x: toX, y: toY } ].forEach((p) => {
+            ctx.fillRect(p.x - hSize / 2, p.y - hSize / 2, hSize, hSize);
+            ctx.strokeRect(p.x - hSize / 2, p.y - hSize / 2, hSize, hSize);
+          });
+          ctx.setLineDash([8, 6]);
         } else if (el.type === "circle") {
           ctx.beginPath();
           ctx.arc(el.x, el.y, el.r + 6, 0, Math.PI * 2);
@@ -1881,7 +2113,7 @@ const ImageEditor = ({ file, onSave, onClose }) => {
         ) {
           return el;
         }
-      } else if (el.type === "rect" || el.type === "mosaic" || el.type === "mask") {
+      } else if (el.type === "rect" || el.type === "callout" || el.type === "sticky" || el.type === "mosaic" || el.type === "mask") {
         const xMin = Math.min(el.x, el.x + el.w);
         const xMax = Math.max(el.x, el.x + el.w);
         const yMin = Math.min(el.y, el.y + el.h);
@@ -1892,6 +2124,25 @@ const ImageEditor = ({ file, onSave, onClose }) => {
           canvasPos.y >= yMin - 8 &&
           canvasPos.y <= yMax + 8
         ) {
+          return el;
+        }
+      } else if (el.type === "arrow") {
+        // 矢印の当たり判定（線分と点との距離計算）
+        const x1 = el.x;
+        const y1 = el.y;
+        const x2 = el.x + el.w;
+        const y2 = el.y + el.h;
+        const lineLenSq = (x2 - x1) ** 2 + (y2 - y1) ** 2;
+        let dist;
+        if (lineLenSq === 0) {
+          dist = Math.hypot(canvasPos.x - x1, canvasPos.y - y1);
+        } else {
+          const t = Math.max(0, Math.min(1, ((canvasPos.x - x1) * (x2 - x1) + (canvasPos.y - y1) * (y2 - y1)) / lineLenSq));
+          const projX = x1 + t * (x2 - x1);
+          const projY = y1 + t * (y2 - y1);
+          dist = Math.hypot(canvasPos.x - projX, canvasPos.y - projY);
+        }
+        if (dist <= (el.brushSize || 6) + 12) {
           return el;
         }
       } else if (el.type === "circle") {
@@ -1956,13 +2207,13 @@ const ImageEditor = ({ file, onSave, onClose }) => {
     );
   };
 
-  // 選択中要素のリサイズハンドル（四隅）の当たり判定
+  // 選択中要素のリサイズハンドル（四隅・矢印先端等）の当たり判定
   const getResizeHandleAtPos = (pos, el) => {
     if (!el) return null;
     const padding = 6;
     const hitRadius = 14;
 
-    if (el.type === "rect" || el.type === "ellipse") {
+    if (el.type === "rect" || el.type === "ellipse" || el.type === "callout" || el.type === "sticky") {
       const xMin = Math.min(el.x, el.x + el.w) - padding;
       const xMax = Math.max(el.x, el.x + el.w) + padding;
       const yMin = Math.min(el.y, el.y + el.h) - padding;
@@ -1972,6 +2223,13 @@ const ImageEditor = ({ file, onSave, onClose }) => {
       if (Math.hypot(pos.x - xMin, pos.y - yMax) <= hitRadius) return "sw"; // 左下
       if (Math.hypot(pos.x - xMax, pos.y - yMin) <= hitRadius) return "ne"; // 右上
       if (Math.hypot(pos.x - xMin, pos.y - yMin) <= hitRadius) return "nw"; // 左上
+    } else if (el.type === "arrow") {
+      const fromX = el.x;
+      const fromY = el.y;
+      const toX = el.x + el.w;
+      const toY = el.y + el.h;
+      if (Math.hypot(pos.x - toX, pos.y - toY) <= hitRadius) return "se"; // 先端
+      if (Math.hypot(pos.x - fromX, pos.y - fromY) <= hitRadius) return "nw"; // 根元
     } else if (el.type === "circle") {
       if (Math.hypot(pos.x - (el.x + el.r + 6), pos.y - el.y) <= hitRadius) return "r";
     }
@@ -2069,7 +2327,7 @@ const ImageEditor = ({ file, onSave, onClose }) => {
       };
       setElements((prev) => [...prev, newEl]);
       activeShapeId.current = newEl.id;
-    } else if (tool === "rect" || tool === "ellipse" || tool === "mosaic" || tool === "mask") {
+    } else if (tool === "rect" || tool === "ellipse" || tool === "callout" || tool === "sticky" || tool === "mosaic" || tool === "mask") {
       pushHistory(elements);
       const newEl = {
         id: generateId(),
@@ -2079,9 +2337,30 @@ const ImageEditor = ({ file, onSave, onClose }) => {
         w: 0,
         h: 0,
         color: color,
-        fillMode: shapeStyle,
+        fillMode: (tool === "callout" || tool === "sticky") ? "fill" : shapeStyle,
         brushSize: brushSize,
+        fontSize: fontSize || 24,
+        text: tool === "sticky" ? "メモ" : tool === "callout" ? "吹き出し" : "",
+        bgColor: tool === "sticky" ? "#fef08a" : "#ffffff",
+        borderColor: color || "#2563eb",
+        tailDirection: "bottom-left",
         mosaicSize: mosaicSize || 16
+      };
+      setElements((prev) => [...prev, newEl]);
+      activeShapeId.current = newEl.id;
+      isDrawingShape.current = true;
+      dragStartPos.current = pos;
+    } else if (tool === "arrow") {
+      pushHistory(elements);
+      const newEl = {
+        id: generateId(),
+        type: "arrow",
+        x: pos.x,
+        y: pos.y,
+        w: 0,
+        h: 0,
+        color: color,
+        brushSize: Math.max(3, brushSize)
       };
       setElements((prev) => [...prev, newEl]);
       activeShapeId.current = newEl.id;
@@ -2182,7 +2461,7 @@ const ImageEditor = ({ file, onSave, onClose }) => {
       setElements((prev) =>
         prev.map((el) => {
           if (el.id !== selectedId) return el;
-          if (el.type === "rect" || el.type === "ellipse") {
+          if (el.type === "rect" || el.type === "ellipse" || el.type === "callout" || el.type === "sticky") {
             let newX = origX;
             let newY = origY;
             let newW = origW;
@@ -2206,6 +2485,12 @@ const ImageEditor = ({ file, onSave, onClose }) => {
               newH = origH - dy;
             }
             return { ...el, x: newX, y: newY, w: newW, h: newH };
+          } else if (el.type === "arrow") {
+            if (handle === "se") {
+              return { ...el, w: origW + dx, h: origH + dy };
+            } else if (handle === "nw") {
+              return { ...el, x: origX + dx, y: origY + dy, w: origW - dx, h: origH - dy };
+            }
           } else if (el.type === "circle" && handle === "r") {
             return { ...el, r: Math.max(5, origR + dx) };
           }
@@ -2251,7 +2536,7 @@ const ImageEditor = ({ file, onSave, onClose }) => {
           };
         })
       );
-    } else if ((tool === "rect" || tool === "ellipse" || tool === "mosaic" || tool === "mask") && isDrawingShape.current && activeShapeId.current) {
+    } else if ((tool === "rect" || tool === "ellipse" || tool === "callout" || tool === "sticky" || tool === "arrow" || tool === "mosaic" || tool === "mask") && isDrawingShape.current && activeShapeId.current) {
       const start = dragStartPos.current;
       setElements((prev) =>
         prev.map((el) => {
@@ -2280,6 +2565,38 @@ const ImageEditor = ({ file, onSave, onClose }) => {
 
   // Pointer Up handler
   const handleEnd = () => {
+    if (isDrawingShape.current && activeShapeId.current) {
+      setElements((prev) =>
+        prev.map((el) => {
+          if (el.id !== activeShapeId.current) return el;
+          // もしクリックだけでドラッグしなかった場合、使いやすい初期サイズを付与
+          if (Math.abs(el.w || 0) < 10 && Math.abs(el.h || 0) < 10) {
+            if (el.type === "arrow") {
+              return { ...el, w: 100, h: -70 };
+            } else if (el.type === "callout") {
+              return { ...el, w: 180, h: 90 };
+            } else if (el.type === "sticky") {
+              return { ...el, w: 140, h: 140 };
+            } else if (el.type === "rect") {
+              return { ...el, w: 140, h: 90 };
+            } else if (el.type === "ellipse") {
+              return { ...el, w: 140, h: 90 };
+            }
+          }
+          // rect, ellipse, callout, sticky の正規化（負の幅高さを解消して操作しやすくする）
+          if (["rect", "ellipse", "callout", "sticky"].includes(el.type)) {
+            const minX = Math.min(el.x, el.x + el.w);
+            const minY = Math.min(el.y, el.y + el.h);
+            const w = Math.abs(el.w);
+            const h = Math.abs(el.h);
+            return { ...el, x: minX, y: minY, w, h };
+          }
+          return el;
+        })
+      );
+      setSelectedId(activeShapeId.current);
+      setTool("select");
+    }
     isPanningRef.current = false;
     isMouseDown.current = false;
     isDraggingElement.current = false;
@@ -2313,19 +2630,37 @@ const ImageEditor = ({ file, onSave, onClose }) => {
   const handleDoubleClick = (e) => {
     const pos = getCanvasCoords(e.clientX, e.clientY);
     const hit = detectHitElement(pos);
-    if (hit && hit.type === "text") {
-      setEditingTextState({
-        id: hit.id,
-        text: hit.text,
-        canvasX: hit.x,
-        canvasY: hit.y,
-        fontSize: hit.fontSize,
-        color: hit.color,
-        useBg: hit.useBg,
-        bgColor: hit.bgColor || "#ffffff",
-        showBorder: hit.showBorder !== false
-      });
-      setSelectedId(hit.id);
+    if (hit) {
+      if (hit.type === "text") {
+        setEditingTextState({
+          id: hit.id,
+          targetType: "text",
+          text: hit.text,
+          canvasX: hit.x,
+          canvasY: hit.y,
+          fontSize: hit.fontSize,
+          color: hit.color,
+          useBg: hit.useBg,
+          bgColor: hit.bgColor || "#ffffff",
+          showBorder: hit.showBorder !== false
+        });
+        setSelectedId(hit.id);
+      } else if (hit.type === "callout" || hit.type === "sticky") {
+        const xMin = Math.min(hit.x, hit.x + hit.w);
+        const yMin = Math.min(hit.y, hit.y + hit.h);
+        setEditingTextState({
+          id: hit.id,
+          targetType: hit.type,
+          text: hit.text || "",
+          canvasX: xMin + 16,
+          canvasY: yMin + 16,
+          fontSize: hit.fontSize || (hit.type === "sticky" ? 22 : 24),
+          color: hit.color || (hit.type === "sticky" ? "#1f2937" : "#000000"),
+          useBg: false,
+          showBorder: false
+        });
+        setSelectedId(hit.id);
+      }
     }
   };
 
@@ -2334,7 +2669,7 @@ const ImageEditor = ({ file, onSave, onClose }) => {
     if (!editingTextState) return;
 
     const trimmed = (editingTextState.text || "").trim();
-    if (!trimmed) {
+    if (!trimmed && editingTextState.targetType !== "callout" && editingTextState.targetType !== "sticky") {
       // If existing was emptied, delete it; if new, cancel
       if (editingTextState.id) {
         setElements((prev) => prev.filter((el) => el.id !== editingTextState.id));
@@ -2348,19 +2683,26 @@ const ImageEditor = ({ file, onSave, onClose }) => {
     if (editingTextState.id) {
       // Update existing
       setElements((prev) =>
-        prev.map((el) =>
-          el.id === editingTextState.id
-            ? {
-                ...el,
-                text: editingTextState.text,
-                fontSize: editingTextState.fontSize,
-                color: editingTextState.color,
-                useBg: editingTextState.useBg,
-                bgColor: editingTextState.bgColor || "#ffffff",
-                showBorder: editingTextState.showBorder !== false
-              }
-            : el
-        )
+        prev.map((el) => {
+          if (el.id !== editingTextState.id) return el;
+          if (el.type === "callout" || el.type === "sticky") {
+            return {
+              ...el,
+              text: editingTextState.text,
+              fontSize: editingTextState.fontSize || el.fontSize,
+              color: editingTextState.color || el.color
+            };
+          }
+          return {
+            ...el,
+            text: editingTextState.text,
+            fontSize: editingTextState.fontSize,
+            color: editingTextState.color,
+            useBg: editingTextState.useBg,
+            bgColor: editingTextState.bgColor || "#ffffff",
+            showBorder: editingTextState.showBorder !== false
+          };
+        })
       );
       setSelectedId(editingTextState.id);
     } else {
@@ -2552,6 +2894,54 @@ const ImageEditor = ({ file, onSave, onClose }) => {
               >
                 <Type className="w-4 h-4" />
                 <span className="text-sm">文字入れ</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setTool("arrow");
+                  setSelectedId(null);
+                  if (editingTextState && !editingTextState.id) setEditingTextState(null);
+                }}
+                className={`flex items-center justify-center space-x-2 py-2.5 rounded-lg border transition-all ${
+                  tool === "arrow"
+                    ? "bg-orange-600 border-orange-500 text-white shadow-lg shadow-orange-600/20 font-bold"
+                    : "bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-750"
+                }`}
+              >
+                <ArrowUpRight className="w-4 h-4 text-orange-400" />
+                <span className="text-sm">矢印(↗)</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setTool("callout");
+                  setSelectedId(null);
+                  if (editingTextState && !editingTextState.id) setEditingTextState(null);
+                }}
+                className={`flex items-center justify-center space-x-2 py-2.5 rounded-lg border transition-all ${
+                  tool === "callout"
+                    ? "bg-orange-600 border-orange-500 text-white shadow-lg shadow-orange-600/20 font-bold"
+                    : "bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-750"
+                }`}
+              >
+                <MessageSquare className="w-4 h-4 text-amber-400" />
+                <span className="text-sm">吹き出し(💬)</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setTool("sticky");
+                  setSelectedId(null);
+                  if (editingTextState && !editingTextState.id) setEditingTextState(null);
+                }}
+                className={`flex items-center justify-center space-x-2 py-2.5 rounded-lg border transition-all ${
+                  tool === "sticky"
+                    ? "bg-orange-600 border-orange-500 text-white shadow-lg shadow-orange-600/20 font-bold"
+                    : "bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-750"
+                }`}
+              >
+                <StickyNote className="w-4 h-4 text-yellow-300" />
+                <span className="text-sm">付箋(📄)</span>
               </button>
 
               <button
@@ -3344,6 +3734,302 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                 </div>
               )}
 
+              {/* Arrow specific inspector */}
+              {selectedElement.type === "arrow" && (
+                <div className="space-y-3">
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-xs">
+                      <span className="text-gray-300">矢印の太さ</span>
+                      <span className="text-blue-400 font-bold">{selectedElement.brushSize || 5}px</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="2"
+                      max="40"
+                      value={selectedElement.brushSize || 5}
+                      onChange={(e) => updateSelectedElement({ brushSize: parseInt(e.target.value) })}
+                      className="w-full h-1.5 bg-gray-750 rounded-lg appearance-none cursor-pointer"
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between pt-1">
+                    <span className="text-xs text-gray-300">矢印の色</span>
+                    <div className="flex items-center gap-1">
+                      {["#ff0000", "#2563eb", "#000000", "#16a34a", "#f59e0b", "#ffffff"].map((c) => (
+                        <button
+                          key={c}
+                          onClick={() => updateSelectedElement({ color: c })}
+                          className={`w-5 h-5 rounded-full border transition-transform ${
+                            selectedElement.color === c ? "scale-125 ring-2 ring-blue-400" : "border-gray-600"
+                          }`}
+                          style={{ backgroundColor: c }}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Callout (吹き出し) specific inspector */}
+              {selectedElement.type === "callout" && (
+                <div className="space-y-3">
+                  {/* テキスト入力 */}
+                  <div className="space-y-1">
+                    <div className="flex justify-between items-center text-xs">
+                      <span className="text-gray-300">吹き出しの文字</span>
+                      <span className="text-[11px] font-mono text-blue-400">
+                        {(selectedElement.text || "").length}文字
+                      </span>
+                    </div>
+                    <textarea
+                      rows={2}
+                      value={selectedElement.text || ""}
+                      onChange={(e) => updateSelectedElement({ text: e.target.value })}
+                      placeholder="吹き出しの文字を入力..."
+                      className="w-full px-2.5 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-xs text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                    />
+                  </div>
+
+                  {/* 文字サイズ */}
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-xs">
+                      <span className="text-gray-300">文字サイズ</span>
+                      <span className="text-blue-400 font-bold">{selectedElement.fontSize || 24}px</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="12"
+                      max="80"
+                      value={selectedElement.fontSize || 24}
+                      onChange={(e) => updateSelectedElement({ fontSize: parseInt(e.target.value) })}
+                      className="w-full h-1.5 bg-gray-750 rounded-lg appearance-none cursor-pointer"
+                    />
+                  </div>
+
+                  {/* しっぽの方向 */}
+                  <div className="space-y-1">
+                    <span className="text-xs text-gray-300">しっぽの向き</span>
+                    <div className="grid grid-cols-4 gap-1">
+                      {[
+                        { id: "bottom-left", label: "左下" },
+                        { id: "bottom-right", label: "右下" },
+                        { id: "top-left", label: "左上" },
+                        { id: "top-right", label: "右上" }
+                      ].map((dir) => (
+                        <button
+                          key={dir.id}
+                          type="button"
+                          onClick={() => updateSelectedElement({ tailDirection: dir.id })}
+                          className={`py-1 text-[11px] rounded border transition-colors ${
+                            (selectedElement.tailDirection || "bottom-left") === dir.id
+                              ? "bg-blue-600 border-blue-500 text-white font-bold"
+                              : "bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-750"
+                          }`}
+                        >
+                          {dir.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* 幅・高さスライダー（縦横比自由変形） */}
+                  <div className="space-y-2 pt-1 border-t border-blue-800/40">
+                    <div className="space-y-1">
+                      <div className="flex justify-between text-xs">
+                        <span className="text-gray-300">横幅</span>
+                        <span className="text-blue-400 font-bold">{Math.abs(Math.round(selectedElement.w || 0))}px</span>
+                      </div>
+                      <input
+                        type="range"
+                        min="40"
+                        max="1000"
+                        value={Math.abs(selectedElement.w || 160)}
+                        onChange={(e) => updateSelectedElement({ w: parseInt(e.target.value) })}
+                        className="w-full h-1.5 bg-gray-750 rounded-lg appearance-none cursor-pointer"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="flex justify-between text-xs">
+                        <span className="text-gray-300">縦幅</span>
+                        <span className="text-blue-400 font-bold">{Math.abs(Math.round(selectedElement.h || 0))}px</span>
+                      </div>
+                      <input
+                        type="range"
+                        min="30"
+                        max="800"
+                        value={Math.abs(selectedElement.h || 90)}
+                        onChange={(e) => updateSelectedElement({ h: parseInt(e.target.value) })}
+                        className="w-full h-1.5 bg-gray-750 rounded-lg appearance-none cursor-pointer"
+                      />
+                    </div>
+                  </div>
+
+                  {/* 枠線の太さ */}
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-xs">
+                      <span className="text-gray-300">枠線の太さ</span>
+                      <span className="text-blue-400 font-bold">{selectedElement.brushSize || 3}px</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="1"
+                      max="20"
+                      value={selectedElement.brushSize || 3}
+                      onChange={(e) => updateSelectedElement({ brushSize: parseInt(e.target.value) })}
+                      className="w-full h-1.5 bg-gray-750 rounded-lg appearance-none cursor-pointer"
+                    />
+                  </div>
+
+                  {/* 背景色 */}
+                  <div className="flex items-center justify-between pt-1">
+                    <span className="text-xs text-gray-300">吹き出しの色</span>
+                    <div className="flex items-center gap-1">
+                      {["#ffffff", "#fef08a", "#bae6fd", "#bbf7d0", "#000000"].map((c) => (
+                        <button
+                          key={c}
+                          onClick={() => updateSelectedElement({ bgColor: c })}
+                          className={`w-5 h-5 rounded-full border transition-transform ${
+                            (selectedElement.bgColor || "#ffffff") === c ? "scale-125 ring-2 ring-blue-400" : "border-gray-600"
+                          }`}
+                          style={{ backgroundColor: c }}
+                        />
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* 枠線・文字の色 */}
+                  <div className="flex items-center justify-between pt-1">
+                    <span className="text-xs text-gray-300">文字・枠の色</span>
+                    <div className="flex items-center gap-1">
+                      {["#000000", "#ff0000", "#2563eb", "#16a34a", "#ffffff"].map((c) => (
+                        <button
+                          key={c}
+                          onClick={() => updateSelectedElement({ color: c, borderColor: c })}
+                          className={`w-5 h-5 rounded-full border transition-transform ${
+                            selectedElement.color === c ? "scale-125 ring-2 ring-blue-400" : "border-gray-600"
+                          }`}
+                          style={{ backgroundColor: c }}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Sticky Note (付箋) specific inspector */}
+              {selectedElement.type === "sticky" && (
+                <div className="space-y-3">
+                  {/* メモ内容 */}
+                  <div className="space-y-1">
+                    <div className="flex justify-between items-center text-xs">
+                      <span className="text-gray-300">付箋のメモ</span>
+                      <span className="text-[11px] font-mono text-blue-400">
+                        {(selectedElement.text || "").length}文字
+                      </span>
+                    </div>
+                    <textarea
+                      rows={3}
+                      value={selectedElement.text || ""}
+                      onChange={(e) => updateSelectedElement({ text: e.target.value })}
+                      placeholder="付箋にメモを入力..."
+                      className="w-full px-2.5 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-xs text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                    />
+                  </div>
+
+                  {/* 付箋のカラーパレット（パステルカラー） */}
+                  <div className="space-y-1">
+                    <span className="text-xs text-gray-300">付箋カラー</span>
+                    <div className="flex items-center gap-1.5">
+                      {[
+                        { color: "#fef08a", name: "イエロー" },
+                        { color: "#fbcfe8", name: "ピンク" },
+                        { color: "#bbf7d0", name: "グリーン" },
+                        { color: "#bae6fd", name: "ブルー" },
+                        { color: "#fed7aa", name: "オレンジ" },
+                        { color: "#ffffff", name: "ホワイト" }
+                      ].map((item) => (
+                        <button
+                          key={item.color}
+                          title={item.name}
+                          onClick={() => updateSelectedElement({ bgColor: item.color })}
+                          className={`w-6 h-6 rounded border transition-transform shadow-xs ${
+                            (selectedElement.bgColor || "#fef08a") === item.color
+                              ? "scale-115 ring-2 ring-blue-400 border-white"
+                              : "border-gray-600 hover:scale-105"
+                          }`}
+                          style={{ backgroundColor: item.color }}
+                        />
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* 文字サイズ */}
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-xs">
+                      <span className="text-gray-300">文字サイズ</span>
+                      <span className="text-blue-400 font-bold">{selectedElement.fontSize || 22}px</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="12"
+                      max="60"
+                      value={selectedElement.fontSize || 22}
+                      onChange={(e) => updateSelectedElement({ fontSize: parseInt(e.target.value) })}
+                      className="w-full h-1.5 bg-gray-750 rounded-lg appearance-none cursor-pointer"
+                    />
+                  </div>
+
+                  {/* 幅・高さスライダー（縦横比自由変形） */}
+                  <div className="space-y-2 pt-1 border-t border-blue-800/40">
+                    <div className="space-y-1">
+                      <div className="flex justify-between text-xs">
+                        <span className="text-gray-300">横幅 (変形)</span>
+                        <span className="text-blue-400 font-bold">{Math.abs(Math.round(selectedElement.w || 0))}px</span>
+                      </div>
+                      <input
+                        type="range"
+                        min="50"
+                        max="800"
+                        value={Math.abs(selectedElement.w || 140)}
+                        onChange={(e) => updateSelectedElement({ w: parseInt(e.target.value) })}
+                        className="w-full h-1.5 bg-gray-750 rounded-lg appearance-none cursor-pointer"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="flex justify-between text-xs">
+                        <span className="text-gray-300">縦幅 (変形)</span>
+                        <span className="text-blue-400 font-bold">{Math.abs(Math.round(selectedElement.h || 0))}px</span>
+                      </div>
+                      <input
+                        type="range"
+                        min="50"
+                        max="800"
+                        value={Math.abs(selectedElement.h || 140)}
+                        onChange={(e) => updateSelectedElement({ h: parseInt(e.target.value) })}
+                        className="w-full h-1.5 bg-gray-750 rounded-lg appearance-none cursor-pointer"
+                      />
+                    </div>
+                  </div>
+
+                  {/* 文字色 */}
+                  <div className="flex items-center justify-between pt-1">
+                    <span className="text-xs text-gray-300">文字色</span>
+                    <div className="flex items-center gap-1">
+                      {["#1f2937", "#dc2626", "#2563eb", "#16a34a", "#ffffff"].map((c) => (
+                        <button
+                          key={c}
+                          onClick={() => updateSelectedElement({ color: c })}
+                          className={`w-5 h-5 rounded-full border transition-transform ${
+                            (selectedElement.color || "#1f2937") === c ? "scale-125 ring-2 ring-blue-400" : "border-gray-600"
+                          }`}
+                          style={{ backgroundColor: c }}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {/* Stamp specific inspector */}
               {selectedElement.type === "stamp" && (
                 <div className="space-y-2.5">
@@ -3531,11 +4217,11 @@ const ImageEditor = ({ file, onSave, onClose }) => {
           )}
 
           {/* Brush / Shape Thickness Settings */}
-          {(tool === "brush" || ((tool === "rect" || tool === "circle" || tool === "ellipse") && shapeStyle === "stroke")) && (
+          {(tool === "brush" || tool === "arrow" || tool === "callout" || ((tool === "rect" || tool === "circle" || tool === "ellipse") && shapeStyle === "stroke")) && (
             <div className="space-y-2 animate-fadeIn">
               <div className="flex justify-between text-xs">
                 <label className="font-bold uppercase tracking-wider text-gray-400">
-                  {tool === "brush" ? "ブラシサイズ" : "枠線の太さ (LINE)"}
+                  {tool === "brush" ? "ブラシサイズ" : tool === "arrow" ? "矢印の太さ" : "枠線の太さ (LINE)"}
                 </label>
                 <span className="text-orange-500 font-bold">{brushSize}px</span>
               </div>
@@ -3723,7 +4409,13 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                         <div className="flex items-center gap-2">
                           <span className="text-xs font-bold text-orange-400 flex items-center gap-1.5">
                             <Edit3 className="w-3.5 h-3.5 text-orange-500" />
-                            {editingTextState.id ? "文字を直接編集" : "画面に直接文字入力"}
+                            {editingTextState.targetType === "callout"
+                              ? "吹き出しの文字を編集"
+                              : editingTextState.targetType === "sticky"
+                                ? "付箋のメモを編集"
+                                : editingTextState.id
+                                  ? "文字を直接編集"
+                                  : "画面に直接文字入力"}
                           </span>
                           {/* リアルタイム文字数カウンター */}
                           <span className="text-[11px] font-mono font-bold bg-orange-600/30 text-orange-300 px-2 py-0.5 rounded-full border border-orange-500/40 shadow-xs">
@@ -3764,30 +4456,32 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                             </button>
                           </div>
 
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const nextBg = !editingTextState.useBg;
-                              setEditingTextState((prev) => ({
-                                ...prev,
-                                useBg: nextBg
-                              }));
-                              setUseTextBg(nextBg);
-                            }}
-                            title="背景座布団の切り替え"
-                            className={`text-[11px] px-2.5 py-1 rounded-lg border transition-colors font-bold ${
-                              editingTextState.useBg
-                                ? "bg-orange-600 border-orange-500 text-white shadow-sm"
-                                : "bg-gray-800 border-gray-700 text-gray-400 hover:bg-gray-750"
-                            }`}
-                          >
-                            座布団
-                          </button>
+                          {editingTextState.targetType !== "callout" && editingTextState.targetType !== "sticky" && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const nextBg = !editingTextState.useBg;
+                                setEditingTextState((prev) => ({
+                                  ...prev,
+                                  useBg: nextBg
+                                }));
+                                setUseTextBg(nextBg);
+                              }}
+                              title="背景座布団の切り替え"
+                              className={`text-[11px] px-2.5 py-1 rounded-lg border transition-colors font-bold ${
+                                editingTextState.useBg
+                                  ? "bg-orange-600 border-orange-500 text-white shadow-sm"
+                                  : "bg-gray-800 border-gray-700 text-gray-400 hover:bg-gray-750"
+                              }`}
+                            >
+                              座布団
+                            </button>
+                          )}
                         </div>
                       </div>
 
                       {/* 座布団がONのときの追加オプション（枠線＆背景色＆スポイト） */}
-                      {editingTextState.useBg && (
+                      {editingTextState.targetType !== "callout" && editingTextState.targetType !== "sticky" && editingTextState.useBg && (
                         <div className="flex items-center justify-between gap-2 p-1.5 bg-gray-800/90 rounded-lg border border-gray-700 animate-fadeIn text-[11px]">
                           {/* 枠線あり/なし */}
                           <div className="flex items-center gap-1">
