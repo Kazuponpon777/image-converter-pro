@@ -87,8 +87,13 @@ import {
   Camera,
   Video,
   FastForward,
-  Rewind
+  Rewind,
+  Mail,
+  Paperclip
 } from "lucide-react";
+
+import { parse as parseEmail, detectFormat as detectEmailFormat } from "omnimail";
+import DOMPurify from "dompurify";
 
 import pdfjsWorker from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 
@@ -337,6 +342,319 @@ const formatTimeWithFraction = (seconds) => {
   const s = Math.floor(seconds % 60);
   const ms = Math.floor((seconds % 1) * 10);
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}.${ms}`;
+};
+
+// ==========================================
+// メール / winmail.dat 解析・添付ファイル復元モーダル
+// ==========================================
+const EmailExtractorModal = ({ emailData, onImportAttachments, onClose }) => {
+  const { file, parsed } = emailData;
+  const [activeTab, setActiveTab] = useState("attachments"); // "attachments" | "body" | "info"
+  const [copied, setCopied] = useState(false);
+  const [importedIndices, setImportedIndices] = useState(new Set());
+
+  const attachments = parsed?.attachments || [];
+  const subject = parsed?.subject || "(件名なし)";
+  const fromName = parsed?.from?.name || parsed?.from?.address || "不明な送信者";
+  const fromAddress = parsed?.from?.address ? `<${parsed.from.address}>` : "";
+  const dateStr = parsed?.date ? new Date(parsed.date).toLocaleString("ja-JP") : "日時不明";
+
+  const textBody = parsed?.body?.text || "";
+  const htmlBody = parsed?.body?.html || "";
+
+  // 全添付ファイルをワークスペースに一括展開
+  const handleImportAll = () => {
+    onImportAttachments(attachments);
+    onClose();
+  };
+
+  // 単一の添付ファイルをワークスペースに追加
+  const handleImportSingle = (att, idx) => {
+    onImportAttachments([att]);
+    setImportedIndices((prev) => new Set([...prev, idx]));
+  };
+
+  // 添付ファイルをPCへダウンロード
+  const handleDownloadSingle = (att, idx) => {
+    const blob = new Blob([att.content], { type: att.mimeType || "application/octet-stream" });
+    const name = att.filename || `attachment_${idx + 1}`;
+    saveAs(blob, name);
+  };
+
+  // 本文をクリップボードにコピー
+  const handleCopyBody = async () => {
+    const content = textBody || htmlBody.replace(/<[^>]+>/g, "");
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      alert("クリップボードへのコピーに失敗しました");
+    }
+  };
+
+  // 本文をテキストファイル(.txt)としてワークスペースに追加
+  const handleImportBodyAsTxt = () => {
+    const content = textBody || htmlBody.replace(/<[^>]+>/g, "");
+    const safeSubject = subject.replace(/[/\\?%*:|"<>]/g, "_").slice(0, 30);
+    const fileName = `メール本文_${safeSubject || "無題"}.txt`;
+    const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+    const txtFile = new File([blob], fileName, { type: "text/plain" });
+    onImportAttachments([], [txtFile]);
+    onClose();
+  };
+
+  // 拡張子に応じたアイコン・バッジカラー
+  const getFileBadge = (filename = "") => {
+    const ext = filename.split(".").pop()?.toLowerCase() || "";
+    if (["jpg", "jpeg", "png", "gif", "webp", "bmp", "heic"].includes(ext)) {
+      return { bg: "bg-blue-600/20 text-blue-400 border-blue-500/30", label: "画像" };
+    }
+    if (ext === "pdf") {
+      return { bg: "bg-red-600/20 text-red-400 border-red-500/30", label: "PDF" };
+    }
+    if (["xlsx", "xls", "csv"].includes(ext)) {
+      return { bg: "bg-emerald-600/20 text-emerald-400 border-emerald-500/30", label: "Excel" };
+    }
+    if (["docx", "doc"].includes(ext)) {
+      return { bg: "bg-indigo-600/20 text-indigo-400 border-indigo-500/30", label: "Word" };
+    }
+    return { bg: "bg-gray-700 text-gray-300 border-gray-600", label: ext.toUpperCase() || "FILE" };
+  };
+
+  return (
+    <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/80 backdrop-blur-md p-4 animate-fadeIn select-none">
+      <div className="bg-gray-900 border border-gray-700/80 rounded-2xl w-full max-w-4xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden animate-scaleUp">
+        {/* モーダルヘッダー */}
+        <div className="px-5 py-4 bg-gray-850 border-b border-gray-800 flex items-center justify-between shrink-0">
+          <div className="flex items-center space-x-3 min-w-0">
+            <div className="w-10 h-10 rounded-xl bg-orange-600/20 border border-orange-500/30 flex items-center justify-center shrink-0 text-orange-400 shadow-inner">
+              <Mail className="w-5 h-5" />
+            </div>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <h3 className="text-base font-bold text-white truncate">
+                  メール・添付ファイル復元プレビュー
+                </h3>
+                <span className="text-[11px] font-mono bg-orange-600/30 text-orange-300 px-2 py-0.5 rounded-full border border-orange-500/40">
+                  {file.name} ({formatBytes(file.size)})
+                </span>
+              </div>
+              <p className="text-xs text-gray-400 truncate mt-0.5">
+                {file.name.toLowerCase().endsWith(".dat")
+                  ? "Outlook独自のdat形式（TNEF）を安全に展開しました"
+                  : "メールファイルから本文と添付ファイルを抽出しました"}
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-800 rounded-lg transition-colors ml-2"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* メール件名・差出人概要カード */}
+        <div className="px-5 py-3 bg-gray-950/70 border-b border-gray-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-2 shrink-0">
+          <div className="min-w-0">
+            <p className="text-sm font-bold text-gray-100 truncate">
+              📌 件名: {subject}
+            </p>
+            <div className="flex items-center gap-3 text-xs text-gray-400 mt-1 flex-wrap">
+              <span>👤 差出人: <strong className="text-gray-300">{fromName}</strong> {fromAddress}</span>
+              <span>🕒 日時: {dateStr}</span>
+            </div>
+          </div>
+
+          {/* 添付ファイルがある場合の一括展開ボタン */}
+          {attachments.length > 0 && (
+            <button
+              onClick={handleImportAll}
+              className="px-4 py-2 bg-gradient-to-r from-orange-600 to-amber-600 hover:from-orange-500 hover:to-amber-500 text-white text-xs font-bold rounded-xl shadow-lg shadow-orange-600/20 transition-all flex items-center justify-center gap-1.5 shrink-0 self-start sm:self-auto cursor-pointer"
+            >
+              <Sparkles className="w-4 h-4" />
+              <span>添付ファイル全{attachments.length}件を展開</span>
+            </button>
+          )}
+        </div>
+
+        {/* タブナビゲーション */}
+        <div className="flex items-center border-b border-gray-800 px-5 bg-gray-900 shrink-0">
+          <button
+            onClick={() => setActiveTab("attachments")}
+            className={`flex items-center gap-2 py-3 px-3 text-xs font-bold border-b-2 transition-colors cursor-pointer ${
+              activeTab === "attachments"
+                ? "border-orange-500 text-orange-400"
+                : "border-transparent text-gray-400 hover:text-gray-200"
+            }`}
+          >
+            <Paperclip className="w-4 h-4" />
+            <span>救出された添付ファイル ({attachments.length})</span>
+          </button>
+          <button
+            onClick={() => setActiveTab("body")}
+            className={`flex items-center gap-2 py-3 px-3 text-xs font-bold border-b-2 transition-colors cursor-pointer ${
+              activeTab === "body"
+                ? "border-orange-500 text-orange-400"
+                : "border-transparent text-gray-400 hover:text-gray-200"
+            }`}
+          >
+            <FileText className="w-4 h-4" />
+            <span>メール本文</span>
+          </button>
+        </div>
+
+        {/* タブコンテンツ */}
+        <div className="flex-grow overflow-y-auto p-5 min-h-[300px] select-text">
+          {/* 添付ファイルタブ */}
+          {activeTab === "attachments" && (
+            <div className="space-y-4">
+              {attachments.length === 0 ? (
+                <div className="text-center py-12 text-gray-500 text-sm">
+                  <Paperclip className="w-10 h-10 mx-auto mb-2 opacity-40" />
+                  <p>添付ファイルは見つかりませんでした（本文のみのメールです）</p>
+                  <p className="text-xs text-gray-600 mt-1">「メール本文」タブからメッセージ内容をご確認いただけます。</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {attachments.map((att, idx) => {
+                    const badge = getFileBadge(att.filename);
+                    const isImported = importedIndices.has(idx);
+                    return (
+                      <div
+                        key={idx}
+                        className="p-3.5 bg-gray-850 rounded-xl border border-gray-750 flex items-center justify-between gap-3 hover:border-gray-650 transition-colors"
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          <span
+                            className={`text-[10px] font-bold px-2 py-1 rounded border uppercase shrink-0 ${badge.bg}`}
+                          >
+                            {badge.label}
+                          </span>
+                          <div className="min-w-0">
+                            <p
+                              className="text-xs font-bold text-gray-200 truncate"
+                              title={att.filename || `attachment_${idx + 1}`}
+                            >
+                              {att.filename || `attachment_${idx + 1}`}
+                            </p>
+                            <p className="text-[11px] text-gray-400 mt-0.5">
+                              {formatBytes(att.size || att.content?.length || 0)}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 shrink-0 select-none">
+                          <button
+                            onClick={() => handleImportSingle(att, idx)}
+                            disabled={isImported}
+                            title="ワークスペースに読み込んで変換・編集"
+                            className={`px-2.5 py-1.5 text-xs font-semibold rounded-lg border transition-colors flex items-center gap-1 ${
+                              isImported
+                                ? "bg-emerald-900/30 border-emerald-700/50 text-emerald-300 opacity-80"
+                                : "bg-orange-600 hover:bg-orange-500 border-orange-500 text-white cursor-pointer shadow-xs"
+                            }`}
+                          >
+                            {isImported ? (
+                              <>
+                                <Check className="w-3.5 h-3.5" />
+                                <span>追加済</span>
+                              </>
+                            ) : (
+                              <>
+                                <Sparkles className="w-3.5 h-3.5" />
+                                <span>追加</span>
+                              </>
+                            )}
+                          </button>
+                          <button
+                            onClick={() => handleDownloadSingle(att, idx)}
+                            title="このファイルを直接パソコンに保存"
+                            className="p-1.5 bg-gray-800 hover:bg-gray-750 border border-gray-700 text-gray-300 hover:text-white rounded-lg transition-colors cursor-pointer"
+                          >
+                            <Download className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* メール本文タブ */}
+          {activeTab === "body" && (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between pb-2 border-b border-gray-800 select-none">
+                <span className="text-xs text-gray-400">
+                  本文のプレビュー（個人情報は外部サーバーに送信されず、安全に表示されています）
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={handleCopyBody}
+                    className="px-2.5 py-1 bg-gray-800 hover:bg-gray-750 text-gray-300 hover:text-white border border-gray-700 rounded-lg text-xs font-medium transition-colors flex items-center gap-1 cursor-pointer"
+                  >
+                    {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                    <span>{copied ? "コピー完了！" : "本文をコピー"}</span>
+                  </button>
+                  <button
+                    onClick={handleImportBodyAsTxt}
+                    className="px-2.5 py-1 bg-gray-800 hover:bg-gray-750 text-orange-400 hover:text-orange-300 border border-gray-700 rounded-lg text-xs font-medium transition-colors flex items-center gap-1 cursor-pointer"
+                  >
+                    <FileText className="w-3.5 h-3.5" />
+                    <span>テキストとして追加</span>
+                  </button>
+                </div>
+              </div>
+
+              {htmlBody ? (
+                <div
+                  className="p-4 bg-white text-gray-900 rounded-xl overflow-auto max-h-[50vh] text-sm leading-relaxed"
+                  dangerouslySetInnerHTML={{
+                    __html: DOMPurify.sanitize(htmlBody)
+                  }}
+                />
+              ) : textBody ? (
+                <pre className="p-4 bg-gray-950 text-gray-200 rounded-xl border border-gray-800 font-mono text-xs whitespace-pre-wrap leading-relaxed overflow-auto max-h-[50vh]">
+                  {textBody}
+                </pre>
+              ) : (
+                <div className="text-center py-12 text-gray-500 text-sm">
+                  本文はありませんでした
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* モーダルフッター */}
+        <div className="px-5 py-3.5 bg-gray-850 border-t border-gray-800 flex items-center justify-between shrink-0 select-none">
+          <span className="text-xs text-gray-400">
+            🔒 すべてお使いのパソコン内だけで処理されています
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={onClose}
+              className="px-4 py-2 bg-gray-800 hover:bg-gray-750 text-gray-300 hover:text-white rounded-xl text-xs font-semibold transition-colors cursor-pointer"
+            >
+              閉じる
+            </button>
+            {attachments.length > 0 && (
+              <button
+                onClick={handleImportAll}
+                className="px-4 py-2 bg-orange-600 hover:bg-orange-500 text-white rounded-xl text-xs font-bold transition-all shadow-md shadow-orange-600/20 flex items-center gap-1.5 cursor-pointer"
+              >
+                <Sparkles className="w-4 h-4" />
+                <span>すべての添付ファイルを展開して閉じる</span>
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 };
 
 // Video Extractor Component (動画から静止画・サムネイルを最高画質で切り出す神モーダル)
@@ -4750,6 +5068,24 @@ export default function App() {
   const [processStatus, setProcessStatus] = useState("");
   const [editingFile, setEditingFile] = useState(null);
   const [videoToExtract, setVideoToExtract] = useState(null);
+  const [emailToExtract, setEmailToExtract] = useState(null);
+
+  // メール / winmail.dat から添付ファイルや本文を取り込んだ際のハンドラ
+  const handleExtractFromEmail = async (selectedAttachments = [], extraFiles = []) => {
+    setEmailToExtract(null);
+    const newFiles = [
+      ...selectedAttachments.map((att, idx) => {
+        const blob = new Blob([att.content], { type: att.mimeType || "application/octet-stream" });
+        const name = att.filename || `添付ファイル_${idx + 1}`;
+        return new File([blob], name, { type: att.mimeType || "application/octet-stream" });
+      }),
+      ...extraFiles
+    ];
+
+    if (newFiles.length > 0) {
+      await processFiles(newFiles);
+    }
+  };
 
   const getExtFromFormat = (format) => {
     if (format === "image/png") return ".png";
@@ -5328,6 +5664,48 @@ export default function App() {
           // 動画ファイルの場合は動画サムネイル抽出モーダルを開く
           setVideoToExtract(file);
           continue;
+        }
+
+        const isEmailOrDat =
+          file.name.toLowerCase().endsWith(".dat") ||
+          file.name.toLowerCase().endsWith(".eml") ||
+          file.name.toLowerCase().endsWith(".msg") ||
+          file.type === "application/vnd.ms-tnef" ||
+          file.type === "message/rfc822";
+
+        if (isEmailOrDat) {
+          setProcessStatus(`メール/datファイルを解析中: ${file.name}`);
+          try {
+            const arrayBuffer = await file.arrayBuffer();
+            const bytes = new Uint8Array(arrayBuffer);
+            const detected = detectEmailFormat(bytes);
+
+            // メール形式または.datファイルの場合はOmniMailで安全に解析
+            if (
+              detected !== "unknown" ||
+              file.name.toLowerCase().endsWith(".eml") ||
+              file.name.toLowerCase().endsWith(".msg") ||
+              file.name.toLowerCase().endsWith(".dat")
+            ) {
+              const parsed = await parseEmail(bytes);
+              if (
+                parsed &&
+                (parsed.attachments?.length > 0 ||
+                  parsed.body?.text ||
+                  parsed.body?.html ||
+                  parsed.subject)
+              ) {
+                addLog(
+                  `Parsed email/dat file: ${file.name}, found ${parsed.attachments?.length || 0} attachments.`
+                );
+                setEmailToExtract({ file, parsed });
+                continue;
+              }
+            }
+          } catch (err) {
+            console.warn("Email/dat parsing failed, fallback to normal file handling:", err);
+            addLog(`Email/dat parsing failed for ${file.name}: ${err.message}`);
+          }
         }
 
         if (file.type === "application/pdf") {
@@ -6095,7 +6473,7 @@ export default function App() {
               </span>
               <span className="min-w-0 flex-1">
                 <span className="block text-base font-extrabold text-orange-950 sm:text-lg">ファイルをまとめて入れる</span>
-                <span className="mt-1 block text-xs leading-relaxed text-stone-600 sm:text-sm">形式は分からなくてOK。画像・動画・PDF・Word・Excelなどを、複数まとめて選択またはドロップできます。</span>
+                <span className="mt-1 block text-xs leading-relaxed text-stone-600 sm:text-sm">形式は分からなくてOK。画像・動画・PDF・Word・Excel・メール添付（winmail.dat等）などを、複数まとめて選択またはドロップできます。</span>
               </span>
               <span className="hidden shrink-0 items-center gap-1 rounded-xl bg-orange-500 px-4 py-2.5 text-sm font-bold text-white shadow-sm transition-colors group-hover:bg-orange-600 sm:inline-flex">
                 ファイルを選ぶ <ArrowRight className="h-4 w-4" />
@@ -6767,6 +7145,15 @@ export default function App() {
           file={videoToExtract}
           onExtract={handleExtractFromVideo}
           onClose={() => setVideoToExtract(null)}
+        />
+      )}
+
+      {/* Email / Winmail.dat Extractor Modal */}
+      {emailToExtract && (
+        <EmailExtractorModal
+          emailData={emailToExtract}
+          onImportAttachments={handleExtractFromEmail}
+          onClose={() => setEmailToExtract(null)}
         />
       )}
     </div>
