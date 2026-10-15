@@ -344,6 +344,16 @@ const formatTimeWithFraction = (seconds) => {
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}.${ms}`;
 };
 
+// Helper: フォーマットバイト数 (例: 1.2 MB)
+const formatBytes = (bytes, decimals = 1) => {
+  if (!+bytes) return "0 B";
+  const k = 1024;
+  const dm = decimals < 0 ? 0 : decimals;
+  const sizes = ["B", "KB", "MB", "GB", "TB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`;
+};
+
 // マジックバイトからMIMEタイプと拡張子を自動判定・復元するヘルパー
 const detectMimeFromBytes = (bytes) => {
   if (!bytes || bytes.length < 4) return { mime: "application/octet-stream", ext: "" };
@@ -5364,9 +5374,21 @@ export default function App() {
     setEmailToExtract(null);
     const newFiles = [
       ...selectedAttachments.map((att, idx) => {
-        const blob = new Blob([att.content], { type: att.mimeType || "application/octet-stream" });
+        let mime = att.mimeType || "";
         const name = att.filename || `添付ファイル_${idx + 1}`;
-        return new File([blob], name, { type: att.mimeType || "application/octet-stream" });
+        const ext = name.split(".").pop()?.toLowerCase();
+        if (!mime || mime === "application/octet-stream") {
+          if (["jpg", "jpeg"].includes(ext)) mime = "image/jpeg";
+          else if (ext === "png") mime = "image/png";
+          else if (ext === "gif") mime = "image/gif";
+          else if (ext === "webp") mime = "image/webp";
+          else if (ext === "bmp") mime = "image/bmp";
+          else if (ext === "pdf") mime = "application/pdf";
+          else if (ext === "docx") mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+          else if (ext === "xlsx") mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+        }
+        const blob = new Blob([att.content], { type: mime || "application/octet-stream" });
+        return new File([blob], name, { type: mime || "application/octet-stream" });
       }),
       ...extraFiles
     ];
@@ -5973,29 +5995,57 @@ export default function App() {
             if (tnefResult && (tnefResult.attachments.length > 0 || tnefResult.body?.text || tnefResult.subject)) {
               addLog(`Parsed TNEF winmail.dat: ${file.name}, found ${tnefResult.attachments.length} attachments.`);
               setEmailToExtract({ file, parsed: tnefResult });
-              continue;
-            }
-
-            // 2. TNEF以外（.eml, .msg など）はOmniMailで解析
-            const detected = detectEmailFormat(bytes);
-            if (
-              detected !== "unknown" ||
-              file.name.toLowerCase().endsWith(".eml") ||
-              file.name.toLowerCase().endsWith(".msg")
-            ) {
-              const parsed = await parseEmail(bytes);
+              processedItems = [{
+                id: generateId(),
+                name: file.name,
+                originalName: file.name,
+                type: "application/vnd.ms-tnef",
+                size: file.size,
+                originalSize: file.size,
+                rawFile: file,
+                isUnsupported: true,
+                isEmailPackage: true,
+                emailParsed: tnefResult,
+                renderWarning: tnefResult.attachments.length > 0
+                  ? `Outlookのwinmail.datを検出しました（添付ファイル: ${tnefResult.attachments.length}件）。「中身を展開する」から画像や文書をワークスペースに取り込めます。`
+                  : "Outlookのwinmail.datを検出しました（本文のみ）。「中身を展開する」からメッセージをご確認いただけます。"
+              }];
+            } else {
+              // 2. TNEF以外（.eml, .msg など）はOmniMailで解析
+              const detected = detectEmailFormat(bytes);
               if (
-                parsed &&
-                (parsed.attachments?.length > 0 ||
-                  parsed.body?.text ||
-                  parsed.body?.html ||
-                  parsed.subject)
+                detected !== "unknown" ||
+                file.name.toLowerCase().endsWith(".eml") ||
+                file.name.toLowerCase().endsWith(".msg")
               ) {
-                addLog(
-                  `Parsed email file: ${file.name}, found ${parsed.attachments?.length || 0} attachments.`
-                );
-                setEmailToExtract({ file, parsed });
-                continue;
+                const parsed = await parseEmail(bytes);
+                if (
+                  parsed &&
+                  (parsed.attachments?.length > 0 ||
+                    parsed.body?.text ||
+                    parsed.body?.html ||
+                    parsed.subject)
+                ) {
+                  addLog(
+                    `Parsed email file: ${file.name}, found ${parsed.attachments?.length || 0} attachments.`
+                  );
+                  setEmailToExtract({ file, parsed });
+                  processedItems = [{
+                    id: generateId(),
+                    name: file.name,
+                    originalName: file.name,
+                    type: file.type || "message/rfc822",
+                    size: file.size,
+                    originalSize: file.size,
+                    rawFile: file,
+                    isUnsupported: true,
+                    isEmailPackage: true,
+                    emailParsed: parsed,
+                    renderWarning: parsed.attachments?.length > 0
+                      ? `メールファイルを検出しました（添付ファイル: ${parsed.attachments.length}件）。「中身を展開する」から画像や文書を取り込めます。`
+                      : "メールファイルを検出しました（本文のみ）。「中身を展開する」からメッセージをご確認いただけます。"
+                  }];
+                }
               }
             }
           } catch (err) {
@@ -6004,7 +6054,9 @@ export default function App() {
           }
         }
 
-        if (file.type === "application/pdf") {
+        if (processedItems.length > 0) {
+          // メールパッケージ等として処理完了
+        } else if (file.type === "application/pdf" || /\.pdf$/i.test(file.name)) {
           if (
             file.size >= LARGE_PDF_FILE_BYTES &&
             !confirm(
@@ -6045,7 +6097,7 @@ export default function App() {
             setProcessStatus(`Excel文書を変換中: ${file.name} (${current} / ${total} シート)`);
           });
           processedItems = items;
-        } else if (file.type.startsWith("image/")) {
+        } else if (file.type.startsWith("image/") || /\.(jpe?g|png|gif|webp|bmp|svg)$/i.test(file.name)) {
           setProcessStatus(`画像を処理中: ${file.name}`);
           const item = await processImage(file);
           processedItems = [item];
@@ -6626,15 +6678,6 @@ export default function App() {
     setProcessStatus("");
   };
 
-  const formatBytes = (bytes, decimals = 1) => {
-    if (!+bytes) return "0 B";
-    const k = 1024;
-    const dm = decimals < 0 ? 0 : decimals;
-    const sizes = ["B", "KB", "MB", "GB"];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`;
-  };
-
   const handleSaveEditedImage = async (dataUrl) => {
     if (!editingFile) return;
     const { id } = editingFile;
@@ -7195,9 +7238,30 @@ export default function App() {
                     <div className="absolute inset-0 bg-[url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI4IiBoZWlnaHQ9IjgiPgo8cmVjdCB3aWR0aD0iOCIgaGVpZ2h0PSI4IiBmaWxsPSIjZmZmN2VkIi8+CjxyZWN0IHdpZHRoPSI0IiBoZWlnaHQ9IjgiIGZpbGw9IiNmZWQ3YWEiLz4KPHJlY3QgeD0iNCIgeT0iNCIgd2lkdGg9IjQiIGhlaWdodD0iNCIgZmlsbD0iI2ZlZDdhYSIvPgo8L3N2Zz4=')] opacity-50"></div>
                     {file.isUnsupported ? (
                       <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 p-4 text-center text-gray-500">
-                        <FileType className="h-12 w-12 text-orange-400" />
-                        <span className="text-xs font-bold">プレビュー未対応ファイル</span>
-                        <span className="max-w-full truncate text-[10px]">{file.name}</span>
+                        {file.isEmailPackage ? (
+                          <>
+                            <div className="w-12 h-12 rounded-2xl bg-orange-500/20 text-orange-600 flex items-center justify-center shadow-inner border border-orange-300/40">
+                              <Mail className="h-6 w-6" />
+                            </div>
+                            <span className="text-xs font-bold text-gray-800">メールパッケージ</span>
+                            <span className="max-w-full truncate text-[11px] text-gray-500 font-mono">{file.name}</span>
+                            {file.emailParsed?.attachments?.length > 0 ? (
+                              <span className="text-[10px] font-semibold text-orange-700 bg-orange-100 border border-orange-200 px-2.5 py-0.5 rounded-full">
+                                添付ファイル {file.emailParsed.attachments.length}件
+                              </span>
+                            ) : (
+                              <span className="text-[10px] font-medium text-gray-500 bg-gray-100 px-2 py-0.5 rounded-full">
+                                本文のみ
+                              </span>
+                            )}
+                          </>
+                        ) : (
+                          <>
+                            <FileType className="h-12 w-12 text-orange-400" />
+                            <span className="text-xs font-bold">プレビュー未対応ファイル</span>
+                            <span className="max-w-full truncate text-[10px]">{file.name}</span>
+                          </>
+                        )}
                       </div>
                     ) : (
                       <img
@@ -7267,7 +7331,9 @@ export default function App() {
                         {index + 1}
                       </span>
                       {file.isUnsupported ? (
-                        <span className="bg-slate-500 text-white text-[10px] font-bold px-2 py-1 rounded shadow-sm">保管</span>
+                        <span className={`text-[10px] font-bold px-2 py-1 rounded shadow-sm ${file.isEmailPackage ? "bg-orange-600 text-white" : "bg-slate-500 text-white"}`}>
+                          {file.isEmailPackage ? "メール" : "保管"}
+                        </span>
                       ) : file.isPdfPage ? (
                         <span className="bg-red-500 text-white text-[10px] font-bold px-2 py-1 rounded shadow-sm">
                           P.{file.pageNumber}
@@ -7283,9 +7349,23 @@ export default function App() {
                     <div className="absolute inset-0 bg-white/60 opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex flex-col items-center justify-center space-y-2 backdrop-blur-[2px]">
                       {file.isUnsupported ? (
                         <div className="flex space-x-2">
+                          {file.isEmailPackage && (
+                            <button
+                              onClick={() => {
+                                if (file.emailParsed) {
+                                  setEmailToExtract({ file: file.rawFile, parsed: file.emailParsed });
+                                }
+                              }}
+                              className="p-2 bg-orange-600 hover:bg-orange-500 text-white rounded-lg shadow-lg transform transition-transform hover:scale-105 flex items-center space-x-1 cursor-pointer"
+                              title="メール内容・添付ファイルを展開"
+                            >
+                              <Mail className="w-4 h-4" />
+                              <span className="text-xs font-bold">開く</span>
+                            </button>
+                          )}
                           <button
                             onClick={() => downloadFile(file)}
-                            className="p-2 bg-gray-800 hover:bg-gray-700 text-white rounded-lg shadow-lg transform transition-transform hover:scale-105 flex items-center space-x-1"
+                            className="p-2 bg-gray-800 hover:bg-gray-700 text-white rounded-lg shadow-lg transform transition-transform hover:scale-105 flex items-center space-x-1 cursor-pointer"
                             title="元ファイルをダウンロード"
                           >
                             <Download className="w-4 h-4" />
@@ -7337,9 +7417,13 @@ export default function App() {
                           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
                           <span>{file.renderWarning}</span>
                         </div>
-                        {file.rawFile && (file.name.toLowerCase().endsWith(".dat") || file.name.toLowerCase().endsWith(".eml") || file.name.toLowerCase().endsWith(".msg")) && (
+                        {file.rawFile && (file.isEmailPackage || file.name.toLowerCase().endsWith(".dat") || file.name.toLowerCase().endsWith(".eml") || file.name.toLowerCase().endsWith(".msg")) && (
                           <button
                             onClick={async () => {
+                              if (file.emailParsed) {
+                                setEmailToExtract({ file: file.rawFile, parsed: file.emailParsed });
+                                return;
+                              }
                               try {
                                 const buf = await file.rawFile.arrayBuffer();
                                 const bytes = new Uint8Array(buf);
