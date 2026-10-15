@@ -61,6 +61,7 @@ import {
   MessageSquare,
   StickyNote,
   GripVertical,
+  GripHorizontal,
   AlertTriangle,
   Eye,
   EyeOff,
@@ -1410,6 +1411,7 @@ const ImageEditor = ({ file, onSave, onClose }) => {
   const [color, setColor] = useState("#000000");
   const [brushSize, setBrushSize] = useState(6); // 枠線の太さ・ブラシサイズ (初期値6px)
   const [fontSize, setFontSize] = useState(40);
+  const [fontFamily, setFontFamily] = useState("sans"); // 選択中のフォント ("sans" | "serif" | "maru" | "hand" | "mono")
   const [useTextBg, setUseTextBg] = useState(true);
   const [textBgColor, setTextBgColor] = useState("#ffffff"); // 座布団の背景色
   const [textShowBorder, setTextShowBorder] = useState(true); // 座布団の枠線あり/なし
@@ -1825,9 +1827,55 @@ const ImageEditor = ({ file, onSave, onClose }) => {
     }
   };
 
-  // Text Inline Editing state: { id?: string, text: string, canvasX: number, canvasY: number, fontSize: number, color: string, useBg: boolean, bgColor: string, showBorder: boolean }
+  // Text Inline Editing state: { id?: string, text: string, canvasX: number, canvasY: number, fontSize: number, color: string, useBg: boolean, bgColor: string, showBorder: boolean, fontFamily: string }
   const [editingTextState, setEditingTextState] = useState(null);
   const textInputRef = useRef(null);
+
+  // フローティング入力パネルのドラッグ移動ステート
+  const [textPanelOffset, setTextPanelOffset] = useState({ x: 0, y: 0 });
+  const isDraggingPanelRef = useRef(false);
+  const panelDragStartRef = useRef({ mouseX: 0, mouseY: 0, initialOffsetX: 0, initialOffsetY: 0 });
+
+  // 入力パネルのドラッグ移動開始ハンドラ（マウス＆タッチ対応）
+  const handlePanelDragStart = (e) => {
+    e.stopPropagation();
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+
+    isDraggingPanelRef.current = true;
+    panelDragStartRef.current = {
+      mouseX: clientX,
+      mouseY: clientY,
+      initialOffsetX: textPanelOffset.x,
+      initialOffsetY: textPanelOffset.y
+    };
+
+    const handlePanelDragMove = (moveEvent) => {
+      if (!isDraggingPanelRef.current) return;
+      if (moveEvent.cancelable) moveEvent.preventDefault();
+      const curX = moveEvent.touches ? moveEvent.touches[0].clientX : moveEvent.clientX;
+      const curY = moveEvent.touches ? moveEvent.touches[0].clientY : moveEvent.clientY;
+      const dx = curX - panelDragStartRef.current.mouseX;
+      const dy = curY - panelDragStartRef.current.mouseY;
+      setTextPanelOffset({
+        x: panelDragStartRef.current.initialOffsetX + dx,
+        y: panelDragStartRef.current.initialOffsetY + dy
+      });
+    };
+
+    const handlePanelDragEnd = () => {
+      isDraggingPanelRef.current = false;
+      window.removeEventListener("mousemove", handlePanelDragMove);
+      window.removeEventListener("mouseup", handlePanelDragEnd);
+      window.removeEventListener("touchmove", handlePanelDragMove);
+      window.removeEventListener("touchend", handlePanelDragEnd);
+    };
+
+    window.addEventListener("mousemove", handlePanelDragMove, { passive: false });
+    window.addEventListener("mouseup", handlePanelDragEnd);
+    window.addEventListener("touchmove", handlePanelDragMove, { passive: false });
+    window.addEventListener("touchend", handlePanelDragEnd);
+  };
 
   const imgRef = useRef(null);
   const isLoaded = useRef(false);
@@ -2041,6 +2089,47 @@ const ImageEditor = ({ file, onSave, onClose }) => {
     };
   };
 
+  // 書体オプション（PDF公式文書向け明朝、標準ゴシック、丸ゴシック、手書きメモ、等幅）
+  const FONT_OPTIONS = [
+    { id: "sans", name: "ゴシック", label: "ゴシック体", desc: "標準・見やすい", family: '"Noto Sans JP", -apple-system, sans-serif' },
+    { id: "serif", name: "明朝体", label: "明朝体", desc: "書類・PDF向け", family: '"Noto Serif JP", "Hiragino Mincho ProN", "Yu Mincho", serif' },
+    { id: "maru", name: "丸ゴシック", label: "丸ゴシック", desc: "POP・やさしい", family: '"Zen Maru Gothic", "Hiragino Maru Gothic ProN", sans-serif' },
+    { id: "hand", name: "手書き風", label: "手書き風", desc: "メモ・付箋向け", family: '"Klee One", "Yomogi", cursive, sans-serif' },
+    { id: "mono", name: "等幅", label: "等幅", desc: "数字・コード", family: 'ui-monospace, Menlo, Monaco, Consolas, monospace' },
+  ];
+
+  const getFontString = (fontSize, fontFamilyKey = "sans", weight = "bold") => {
+    switch (fontFamilyKey) {
+      case "serif":
+        return `${weight} ${fontSize}px "Noto Serif JP", "Hiragino Mincho ProN", "Yu Mincho", "MS PMincho", serif`;
+      case "maru":
+        return `${weight} ${fontSize}px "Zen Maru Gothic", "Hiragino Maru Gothic ProN", "BIZ UDPGothic", sans-serif`;
+      case "hand":
+        return `600 ${fontSize}px "Klee One", "Yomogi", cursive, sans-serif`;
+      case "mono":
+        return `${weight} ${fontSize}px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace`;
+      case "sans":
+      default:
+        return `${weight} ${fontSize}px "Noto Sans JP", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Hiragino Sans", sans-serif`;
+    }
+  };
+
+  const getFontCssFamily = (fontFamilyKey = "sans") => {
+    switch (fontFamilyKey) {
+      case "serif":
+        return '"Noto Serif JP", "Hiragino Mincho ProN", "Yu Mincho", "MS PMincho", serif';
+      case "maru":
+        return '"Zen Maru Gothic", "Hiragino Maru Gothic ProN", "BIZ UDPGothic", sans-serif';
+      case "hand":
+        return '"Klee One", "Yomogi", cursive, sans-serif';
+      case "mono":
+        return 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace';
+      case "sans":
+      default:
+        return '"Noto Sans JP", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Hiragino Sans", sans-serif';
+    }
+  };
+
   // Helper to measure text multiline block dimensions
   const getTextMetrics = (ctx, el) => {
     const lines = String(el.text || "").split("\n");
@@ -2048,7 +2137,7 @@ const ImageEditor = ({ file, onSave, onClose }) => {
     const lineHeight = fontSize * 1.3;
     const p = fontSize * 0.25;
 
-    ctx.font = `bold ${fontSize}px "Inter", "Noto Sans JP", -apple-system, sans-serif`;
+    ctx.font = getFontString(fontSize, el.fontFamily || "sans", "bold");
     let maxWidth = 0;
     lines.forEach((line) => {
       const w = ctx.measureText(line).width;
@@ -2076,7 +2165,7 @@ const ImageEditor = ({ file, onSave, onClose }) => {
 
     const { lines, fontSize, lineHeight, p, maxWidth, totalHeight } = getTextMetrics(ctx, el);
 
-    ctx.font = `bold ${fontSize}px "Inter", "Noto Sans JP", -apple-system, sans-serif`;
+    ctx.font = getFontString(fontSize, el.fontFamily || "sans", "bold");
     ctx.textBaseline = "top";
 
     if (el.useBg) {
@@ -2227,7 +2316,7 @@ const ImageEditor = ({ file, onSave, onClose }) => {
     // テキストの描画
     if (el.text && el.text.trim()) {
       const fSize = el.fontSize || Math.max(14, Math.min(32, Math.round(h * 0.22)));
-      ctx.font = `bold ${fSize}px "Inter", "Noto Sans JP", sans-serif`;
+      ctx.font = getFontString(fSize, el.fontFamily || "sans", "bold");
       ctx.fillStyle = el.color || "#000000";
       ctx.textBaseline = "middle";
       ctx.textAlign = "center";
@@ -2284,7 +2373,7 @@ const ImageEditor = ({ file, onSave, onClose }) => {
     // テキストの描画
     if (el.text && el.text.trim()) {
       const fSize = el.fontSize || Math.max(14, Math.min(28, Math.round(h * 0.18)));
-      ctx.font = `500 ${fSize}px "Inter", "Noto Sans JP", -apple-system, sans-serif`;
+      ctx.font = getFontString(fSize, el.fontFamily || "hand", "500");
       ctx.fillStyle = el.color || "#1f2937";
       ctx.textBaseline = "top";
       ctx.textAlign = "left";
@@ -3027,6 +3116,7 @@ const ImageEditor = ({ file, onSave, onClose }) => {
       setTool("select");
     } else if (tool === "text") {
       // Start inline text editing at clicked canvas pos
+      setTextPanelOffset({ x: 0, y: 0 });
       setEditingTextState({
         id: null,
         text: "",
@@ -3036,7 +3126,8 @@ const ImageEditor = ({ file, onSave, onClose }) => {
         color: color,
         useBg: useTextBg,
         bgColor: textBgColor,
-        showBorder: textShowBorder
+        showBorder: textShowBorder,
+        fontFamily: fontFamily
       });
     }
   };
@@ -3248,6 +3339,7 @@ const ImageEditor = ({ file, onSave, onClose }) => {
     const pos = getCanvasCoords(e.clientX, e.clientY);
     const hit = detectHitElement(pos);
     if (hit) {
+      setTextPanelOffset({ x: 0, y: 0 });
       if (hit.type === "text") {
         setEditingTextState({
           id: hit.id,
@@ -3259,7 +3351,8 @@ const ImageEditor = ({ file, onSave, onClose }) => {
           color: hit.color,
           useBg: hit.useBg,
           bgColor: hit.bgColor || "#ffffff",
-          showBorder: hit.showBorder !== false
+          showBorder: hit.showBorder !== false,
+          fontFamily: hit.fontFamily || fontFamily
         });
         setSelectedId(hit.id);
       } else if (hit.type === "callout" || hit.type === "sticky") {
@@ -3274,7 +3367,8 @@ const ImageEditor = ({ file, onSave, onClose }) => {
           fontSize: hit.fontSize || (hit.type === "sticky" ? 22 : 24),
           color: hit.color || (hit.type === "sticky" ? "#1f2937" : "#000000"),
           useBg: false,
-          showBorder: false
+          showBorder: false,
+          fontFamily: hit.fontFamily || (hit.type === "sticky" ? "hand" : fontFamily)
         });
         setSelectedId(hit.id);
       }
@@ -3307,7 +3401,8 @@ const ImageEditor = ({ file, onSave, onClose }) => {
               ...el,
               text: editingTextState.text,
               fontSize: editingTextState.fontSize || el.fontSize,
-              color: editingTextState.color || el.color
+              color: editingTextState.color || el.color,
+              fontFamily: editingTextState.fontFamily || el.fontFamily || (el.type === "sticky" ? "hand" : fontFamily)
             };
           }
           return {
@@ -3317,7 +3412,8 @@ const ImageEditor = ({ file, onSave, onClose }) => {
             color: editingTextState.color,
             useBg: editingTextState.useBg,
             bgColor: editingTextState.bgColor || "#ffffff",
-            showBorder: editingTextState.showBorder !== false
+            showBorder: editingTextState.showBorder !== false,
+            fontFamily: editingTextState.fontFamily || el.fontFamily || fontFamily
           };
         })
       );
@@ -3334,7 +3430,8 @@ const ImageEditor = ({ file, onSave, onClose }) => {
         color: editingTextState.color,
         useBg: editingTextState.useBg,
         bgColor: editingTextState.bgColor || "#ffffff",
-        showBorder: editingTextState.showBorder !== false
+        showBorder: editingTextState.showBorder !== false,
+        fontFamily: editingTextState.fontFamily || fontFamily
       };
       setElements((prev) => [...prev, newEl]);
       setSelectedId(newEl.id);
@@ -3343,6 +3440,7 @@ const ImageEditor = ({ file, onSave, onClose }) => {
 
     // 作業中のフォントサイズやスタイルをキープ（次回に引き継ぐ）
     if (editingTextState.fontSize) setFontSize(editingTextState.fontSize);
+    if (editingTextState.fontFamily) setFontFamily(editingTextState.fontFamily);
     if (editingTextState.color) setColor(editingTextState.color);
     if (editingTextState.useBg !== undefined) setUseTextBg(editingTextState.useBg);
     if (editingTextState.bgColor) setTextBgColor(editingTextState.bgColor);
@@ -4110,6 +4208,31 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                     />
                   </div>
 
+                  {/* 書体（フォント）の変更 */}
+                  <div className="space-y-1.5 pt-1">
+                    <span className="text-xs text-gray-300">書体（フォント）</span>
+                    <div className="grid grid-cols-3 gap-1">
+                      {FONT_OPTIONS.map((f) => {
+                        const isSelected = (selectedElement.fontFamily || "sans") === f.id;
+                        return (
+                          <button
+                            key={f.id}
+                            type="button"
+                            onClick={() => updateSelectedElement({ fontFamily: f.id })}
+                            className={`px-2 py-1.5 rounded-lg text-xs font-bold transition-all border ${
+                              isSelected
+                                ? "bg-blue-600 border-blue-400 text-white shadow-xs"
+                                : "bg-gray-800 border-gray-700 text-gray-300 hover:text-white hover:bg-gray-750"
+                            }`}
+                            style={{ fontFamily: f.family }}
+                          >
+                            {f.name}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
                   {/* 文字色 */}
                   <div className="flex items-center justify-between pt-1">
                     <span className="text-xs text-gray-300">文字色</span>
@@ -4732,6 +4855,32 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                 />
               </div>
 
+              {/* 書体（フォント）の初期設定 */}
+              <div className="space-y-1.5 pt-1">
+                <span className="text-xs text-gray-400 font-medium">基本フォント（書体）</span>
+                <div className="grid grid-cols-2 gap-1.5">
+                  {FONT_OPTIONS.map((f) => {
+                    const isSelected = fontFamily === f.id;
+                    return (
+                      <button
+                        key={f.id}
+                        type="button"
+                        onClick={() => setFontFamily(f.id)}
+                        className={`px-2 py-1.5 rounded-lg text-xs font-bold transition-all border text-left flex flex-col cursor-pointer ${
+                          isSelected
+                            ? "bg-orange-600 border-orange-500 text-white shadow-xs"
+                            : "bg-gray-800 border-gray-750 text-gray-300 hover:text-white hover:bg-gray-700"
+                        }`}
+                        style={{ fontFamily: f.family }}
+                      >
+                        <span>{f.name}</span>
+                        <span className="text-[10px] opacity-75 font-normal">{f.desc}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
               {/* 座布団ON/OFF */}
               <div className="space-y-2 pt-1">
                 <div className="flex items-center space-x-2">
@@ -5006,7 +5155,21 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                   }`}
                 />
 
-                {/* Inline Text Input Overlay (画面直接入力・リアルタイムプレビュー＆文字数カウント) */}
+                {/* テキスト挿入ターゲット位置マーカー（パネルを動かしても文字が入る位置がひと目で分かる） */}
+                {editingTextState && canvasRef.current && (
+                  <div
+                    className="absolute pointer-events-none z-20 flex items-center justify-center -translate-x-1/2 -translate-y-1/2"
+                    style={{
+                      left: `${(editingTextState.canvasX / canvasRef.current.width) * 100}%`,
+                      top: `${(editingTextState.canvasY / canvasRef.current.height) * 100}%`
+                    }}
+                  >
+                    <div className="w-6 h-6 rounded-full border-2 border-orange-500 bg-orange-500/25 animate-ping absolute" />
+                    <div className="w-3 h-3 rounded-full bg-orange-500 ring-2 ring-white shadow-lg relative" />
+                  </div>
+                )}
+
+                {/* Inline Text Input Overlay (ドラッグ移動可能・画面直接入力・リアルタイムプレビュー＆文字数カウント) */}
                 {editingTextState && canvasRef.current && (
                   <div
                     className="absolute z-30 flex flex-col bg-gray-900/95 text-white border-2 border-orange-500 p-3 rounded-2xl shadow-2xl animate-fadeIn ring-4 ring-black/40 backdrop-blur-md"
@@ -5015,29 +5178,70 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                       top: `${(editingTextState.canvasY / canvasRef.current.height) * 100}%`,
                       minWidth: "320px",
                       maxWidth: "92vw",
-                      transform: "translate(-10px, -10px)"
+                      transform: `translate(${textPanelOffset.x - 10}px, ${textPanelOffset.y - 10}px)`
                     }}
                     onClick={(e) => e.stopPropagation()}
                     onMouseDown={(e) => e.stopPropagation()}
                   >
-                    {/* 上部コントロールバー */}
+                    {/* つかんで移動できるフローティングヘッダーバー */}
+                    <div
+                      onMouseDown={handlePanelDragStart}
+                      onTouchStart={handlePanelDragStart}
+                      className="flex items-center justify-between bg-gray-800/95 hover:bg-gray-750 px-2.5 py-1.5 rounded-xl border border-gray-700/80 cursor-grab active:cursor-grabbing select-none transition-colors mb-2.5 group shadow-inner"
+                      title="ここをつかんで画面内を自由にドラッグ移動できます"
+                    >
+                      <div className="flex items-center gap-1.5 text-xs font-bold text-orange-400">
+                        <GripHorizontal className="w-4 h-4 text-orange-500 group-hover:scale-110 transition-transform" />
+                        <span className="text-[11px] font-semibold text-gray-200">
+                          {editingTextState.targetType === "callout"
+                            ? "吹き出しの文字編集"
+                            : editingTextState.targetType === "sticky"
+                              ? "付箋のメモ編集"
+                              : "ドラッグして移動"}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {/* リアルタイム文字数カウンター */}
+                        <span className="text-[11px] font-mono font-bold bg-orange-600/30 text-orange-300 px-2 py-0.5 rounded-full border border-orange-500/40 shadow-xs">
+                          📝 {(editingTextState.text || "").length}文字
+                          {(editingTextState.text || "").includes("\n") && ` (${(editingTextState.text || "").split("\n").length}行)`}
+                        </span>
+                        {/* 位置リセットボタン（移動した時のみ表示） */}
+                        {(textPanelOffset.x !== 0 || textPanelOffset.y !== 0) && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setTextPanelOffset({ x: 0, y: 0 });
+                            }}
+                            title="元の位置に戻す"
+                            className="text-[10px] text-gray-300 hover:text-white px-2 py-0.5 bg-gray-700 hover:bg-gray-650 rounded border border-gray-600 transition-colors cursor-pointer"
+                          >
+                            位置リセット
+                          </button>
+                        )}
+                        {/* 閉じるボタン */}
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setEditingTextState(null);
+                          }}
+                          className="text-gray-400 hover:text-white p-1 rounded-md hover:bg-gray-700 transition-colors cursor-pointer"
+                          title="キャンセルして閉じる (Esc)"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* コントロールバー */}
                     <div className="flex flex-col gap-2 mb-2 pb-2 border-b border-gray-750">
                       <div className="flex items-center justify-between flex-wrap gap-2">
                         <div className="flex items-center gap-2">
-                          <span className="text-xs font-bold text-orange-400 flex items-center gap-1.5">
-                            <Edit3 className="w-3.5 h-3.5 text-orange-500" />
-                            {editingTextState.targetType === "callout"
-                              ? "吹き出しの文字を編集"
-                              : editingTextState.targetType === "sticky"
-                                ? "付箋のメモを編集"
-                                : editingTextState.id
-                                  ? "文字を直接編集"
-                                  : "画面に直接文字入力"}
-                          </span>
-                          {/* リアルタイム文字数カウンター */}
-                          <span className="text-[11px] font-mono font-bold bg-orange-600/30 text-orange-300 px-2 py-0.5 rounded-full border border-orange-500/40 shadow-xs">
-                            📝 {(editingTextState.text || "").length}文字
-                            {(editingTextState.text || "").includes("\n") && ` (${(editingTextState.text || "").split("\n").length}行)`}
+                          <span className="text-xs font-bold text-gray-300 flex items-center gap-1.5">
+                            <Edit3 className="w-3.5 h-3.5 text-orange-400" />
+                            {editingTextState.id ? "文字編集" : "直接入力"}
                           </span>
                         </div>
 
@@ -5094,6 +5298,35 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                               座布団
                             </button>
                           )}
+                        </div>
+                      </div>
+
+                      {/* 書体（フォント）セレクター */}
+                      <div className="flex items-center gap-1.5 p-1.5 bg-gray-800/90 rounded-lg border border-gray-700/80 overflow-x-auto text-[11px]">
+                        <span className="text-gray-400 font-bold px-1 shrink-0">書体:</span>
+                        <div className="flex items-center gap-1 shrink-0 flex-wrap">
+                          {FONT_OPTIONS.map((f) => {
+                            const isSelected = (editingTextState.fontFamily || fontFamily || "sans") === f.id;
+                            return (
+                              <button
+                                key={f.id}
+                                type="button"
+                                onClick={() => {
+                                  setEditingTextState((prev) => ({ ...prev, fontFamily: f.id }));
+                                  setFontFamily(f.id);
+                                }}
+                                title={`${f.label} (${f.desc})`}
+                                className={`px-2 py-0.5 rounded text-[11px] font-bold transition-all cursor-pointer ${
+                                  isSelected
+                                    ? "bg-orange-600 text-white shadow-sm ring-1 ring-orange-400"
+                                    : "bg-gray-750 hover:bg-gray-700 text-gray-300 hover:text-white"
+                                }`}
+                                style={{ fontFamily: f.family }}
+                              >
+                                {f.name}
+                              </button>
+                            );
+                          })}
                         </div>
                       </div>
 
@@ -5242,9 +5475,10 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                           color: editingTextState.color || "#000000",
                           backgroundColor: "transparent",
                           fontSize: `${Math.max(14, Math.min(48, Math.round((editingTextState.fontSize || 40) * Math.min(1.2, Math.max(0.5, zoomScale)))))}px`,
-                          lineHeight: "1.3"
+                          lineHeight: "1.3",
+                          fontFamily: getFontCssFamily(editingTextState.fontFamily || fontFamily)
                         }}
-                        className="w-full focus:outline-none resize-none font-bold font-sans leading-relaxed p-2 placeholder-gray-400"
+                        className="w-full focus:outline-none resize-none font-bold leading-relaxed p-2 placeholder-gray-400"
                       />
                     </div>
 
