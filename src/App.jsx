@@ -344,6 +344,295 @@ const formatTimeWithFraction = (seconds) => {
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}.${ms}`;
 };
 
+// マジックバイトからMIMEタイプと拡張子を自動判定・復元するヘルパー
+const detectMimeFromBytes = (bytes) => {
+  if (!bytes || bytes.length < 4) return { mime: "application/octet-stream", ext: "" };
+  // JPEG: FF D8 FF
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return { mime: "image/jpeg", ext: ".jpg" };
+  }
+  // PNG: 89 50 4E 47
+  if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) {
+    return { mime: "image/png", ext: ".png" };
+  }
+  // GIF: 47 49 46 38
+  if (bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46) {
+    return { mime: "image/gif", ext: ".gif" };
+  }
+  // PDF: 25 50 44 46 (%PDF)
+  if (bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46) {
+    return { mime: "application/pdf", ext: ".pdf" };
+  }
+  // ZIP / Office文書 (docx, xlsx, pptx): 50 4B 03 04
+  if (bytes[0] === 0x50 && bytes[1] === 0x4b && bytes[2] === 0x03 && bytes[3] === 0x04) {
+    return { mime: "application/zip", ext: ".zip" };
+  }
+  // WEBP: 52 49 46 46 ... 57 45 42 50
+  if (bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 && bytes.length >= 12) {
+    if (bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) {
+      return { mime: "image/webp", ext: ".webp" };
+    }
+  }
+  return { mime: "application/octet-stream", ext: "" };
+};
+
+// 日本語（Shift_JIS/CP932）とUTF-8を自動判別してデコードするヘルパー
+const decodeTextSmart = (bytes) => {
+  if (!bytes || bytes.length === 0) return "";
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes).replace(/\0+$/, "");
+  } catch {
+    try {
+      return new TextDecoder("shift_jis").decode(bytes).replace(/\0+$/, "");
+    } catch {
+      return new TextDecoder("windows-1252").decode(bytes).replace(/\0+$/, "");
+    }
+  }
+};
+
+// MAPIプロパティから添付ファイル名や実データを抽出するヘルパー
+const extractMapiAttachmentProps = (data, att) => {
+  if (data.length < 4) return;
+  const numProps = data[0] | (data[1] << 8) | (data[2] << 16) | (data[3] * 16777216);
+  let pos = 4;
+
+  for (let i = 0; i < numProps && pos + 4 <= data.length; i++) {
+    const propType = data[pos] | (data[pos + 1] << 8);
+    const propId = data[pos + 2] | (data[pos + 3] << 8);
+    pos += 4;
+
+    const isMulti = (propType & 0x1000) !== 0;
+    const baseType = propType & ~0x1000;
+
+    if (propId >= 0x8000 && propId <= 0xfffe) {
+      if (pos + 20 > data.length) break;
+      pos += 16;
+      const kind = data[pos] | (data[pos + 1] << 8) | (data[pos + 2] << 16) | (data[pos + 3] * 16777216);
+      pos += 4;
+      if (kind === 0) pos += 4;
+      else {
+        const nameLen = data[pos] | (data[pos + 1] << 8) | (data[pos + 2] << 16) | (data[pos + 3] * 16777216);
+        pos += 4 + nameLen + ((-nameLen) & 3);
+      }
+    }
+
+    let valCount = isMulti ? (data[pos] | (data[pos + 1] << 8) | (data[pos + 2] << 16) | (data[pos + 3] * 16777216)) : 1;
+    if (isMulti) pos += 4;
+
+    for (let c = 0; c < valCount; c++) {
+      let valLen = 0;
+      if (baseType === 0x0002 || baseType === 0x000b) valLen = 2;
+      else if (baseType === 0x0003 || baseType === 0x0004) valLen = 4;
+      else if (baseType === 0x0005 || baseType === 0x0006 || baseType === 0x0007 || baseType === 0x0014 || baseType === 0x0040) valLen = 8;
+      else if (baseType === 0x0048) valLen = 16;
+      else {
+        if (pos + 4 > data.length) break;
+        valLen = (data[pos] | (data[pos + 1] << 8) | (data[pos + 2] << 16) | (data[pos + 3] * 16777216)) >>> 0;
+        pos += 4;
+      }
+
+      if (pos + valLen > data.length) break;
+      const valBytes = data.subarray(pos, pos + valLen);
+      pos += valLen + ((-valLen) & 3);
+
+      if (c === 0 && valBytes.length > 0) {
+        // PR_ATTACH_LONG_FILENAME (0x3707): 日本語やスペース含む正式ファイル名
+        if (propId === 0x3707) {
+          att.filename = baseType === 0x001f
+            ? new TextDecoder("utf-16le").decode(valBytes).replace(/\0+$/, "")
+            : decodeTextSmart(valBytes);
+        }
+        // PR_ATTACH_FILENAME (0x3704): 8.3形式のファイル名（ロングネームがまだない場合）
+        else if (propId === 0x3704 && !att.filename) {
+          att.filename = baseType === 0x001f
+            ? new TextDecoder("utf-16le").decode(valBytes).replace(/\0+$/, "")
+            : decodeTextSmart(valBytes);
+        }
+        // PR_ATTACH_DATA_BIN (0x3701): 添付ファイル実データ
+        else if (propId === 0x3701 && !att.data) {
+          att.data = valBytes;
+        }
+        // PR_ATTACH_MIME_TAG (0x370E): MIME形式
+        else if (propId === 0x370e) {
+          att.mimeType = new TextDecoder("utf-8").decode(valBytes).replace(/\0+$/, "").toLowerCase();
+        }
+      }
+    }
+  }
+};
+
+const finalizeAttachment = (att, index) => {
+  let filename = att.filename || "";
+  let mimeType = att.mimeType || "";
+  const detected = detectMimeFromBytes(att.data);
+
+  if (!mimeType) mimeType = detected.mime;
+  if (!filename) {
+    filename = `attachment_${index + 1}${detected.ext}`;
+  } else if (!filename.includes(".") && detected.ext) {
+    filename += detected.ext;
+  }
+
+  return {
+    filename,
+    mimeType,
+    size: att.data ? att.data.length : 0,
+    content: att.data || new Uint8Array(0)
+  };
+};
+
+// Outlook winmail.dat (TNEF) を正確に解凍・抽出する高精度パーサー
+const parseTnefRobust = (buf) => {
+  if (!buf || buf.length < 6) return null;
+  const sig = buf[0] | (buf[1] << 8) | (buf[2] << 16) | (buf[3] * 16777216);
+  // TNEF signature: 0x223E9F78
+  if (sig !== 0x223e9f78) return null;
+
+  let offset = 6;
+  let subject = "";
+  let bodyText = "";
+  let bodyHtml = "";
+  const attachments = [];
+  let currentAtt = null;
+
+  while (offset < buf.length) {
+    if (offset + 9 > buf.length) break;
+    const level = buf[offset];
+    const attrId = buf[offset + 1] | (buf[offset + 2] << 8);
+    const attrType = buf[offset + 3] | (buf[offset + 4] << 8);
+    const length = (buf[offset + 5] | (buf[offset + 6] << 8) | (buf[offset + 7] << 16) | (buf[offset + 8] * 16777216)) >>> 0;
+    offset += 9;
+
+    if (offset + length > buf.length) break;
+    const data = buf.subarray(offset, offset + length);
+    offset += length + 2; // 2 bytes checksum
+
+    if (level === 1) { // メッセージレベル
+      if (attrId === 0x8004) { // Subject
+        subject = decodeTextSmart(data);
+      } else if (attrId === 0x800c) { // Body text
+        bodyText = decodeTextSmart(data);
+      } else if (attrId === 0x9003) { // MAPIProps in Message
+        // メッセージレベルのMAPIから件名やHTML本文を抽出
+        try {
+          extractMapiMessageProps(data, (res) => {
+            if (res.subject && !subject) subject = res.subject;
+            if (res.bodyText && !bodyText) bodyText = res.bodyText;
+            if (res.bodyHtml && !bodyHtml) bodyHtml = res.bodyHtml;
+          });
+        } catch {
+          // ignore
+        }
+      }
+    } else if (level === 2) { // 添付ファイルレベル
+      if (attrId === 0x9002) { // attAttachRendData (新規添付ファイルの区切り)
+        if (currentAtt && (currentAtt.data || currentAtt.filename)) {
+          attachments.push(finalizeAttachment(currentAtt, attachments.length));
+        }
+        currentAtt = { filename: "", data: null, mimeType: "" };
+      }
+      if (!currentAtt) currentAtt = { filename: "", data: null, mimeType: "" };
+
+      if (attrId === 0x8010) { // attAttachTitle
+        const title = decodeTextSmart(data);
+        if (title && !currentAtt.filename) currentAtt.filename = title;
+      } else if (attrId === 0x800f) { // attAttachData
+        currentAtt.data = data;
+      } else if (attrId === 0x9003) { // attMAPIProps in attachment
+        try {
+          extractMapiAttachmentProps(data, currentAtt);
+        } catch {
+          // ignore
+        }
+      }
+    }
+  }
+
+  if (currentAtt && (currentAtt.data || currentAtt.filename)) {
+    attachments.push(finalizeAttachment(currentAtt, attachments.length));
+  }
+
+  return {
+    format: "tnef",
+    subject: subject || "(件名なし)",
+    body: {
+      text: bodyText,
+      html: bodyHtml
+    },
+    attachments
+  };
+};
+
+// メッセージレベルのMAPIPropsをパースするヘルパー
+const extractMapiMessageProps = (data, callback) => {
+  if (data.length < 4) return;
+  const numProps = data[0] | (data[1] << 8) | (data[2] << 16) | (data[3] * 16777216);
+  let pos = 4;
+  const res = {};
+
+  for (let i = 0; i < numProps && pos + 4 <= data.length; i++) {
+    const propType = data[pos] | (data[pos + 1] << 8);
+    const propId = data[pos + 2] | (data[pos + 3] << 8);
+    pos += 4;
+
+    const isMulti = (propType & 0x1000) !== 0;
+    const baseType = propType & ~0x1000;
+
+    if (propId >= 0x8000 && propId <= 0xfffe) {
+      if (pos + 20 > data.length) break;
+      pos += 16;
+      const kind = data[pos] | (data[pos + 1] << 8) | (data[pos + 2] << 16) | (data[pos + 3] * 16777216);
+      pos += 4;
+      if (kind === 0) pos += 4;
+      else {
+        const nameLen = data[pos] | (data[pos + 1] << 8) | (data[pos + 2] << 16) | (data[pos + 3] * 16777216);
+        pos += 4 + nameLen + ((-nameLen) & 3);
+      }
+    }
+
+    let valCount = isMulti ? (data[pos] | (data[pos + 1] << 8) | (data[pos + 2] << 16) | (data[pos + 3] * 16777216)) : 1;
+    if (isMulti) pos += 4;
+
+    for (let c = 0; c < valCount; c++) {
+      let valLen = 0;
+      if (baseType === 0x0002 || baseType === 0x000b) valLen = 2;
+      else if (baseType === 0x0003 || baseType === 0x0004) valLen = 4;
+      else if (baseType === 0x0005 || baseType === 0x0006 || baseType === 0x0007 || baseType === 0x0014 || baseType === 0x0040) valLen = 8;
+      else if (baseType === 0x0048) valLen = 16;
+      else {
+        if (pos + 4 > data.length) break;
+        valLen = (data[pos] | (data[pos + 1] << 8) | (data[pos + 2] << 16) | (data[pos + 3] * 16777216)) >>> 0;
+        pos += 4;
+      }
+
+      if (pos + valLen > data.length) break;
+      const valBytes = data.subarray(pos, pos + valLen);
+      pos += valLen + ((-valLen) & 3);
+
+      if (c === 0 && valBytes.length > 0) {
+        // PR_SUBJECT (0x0037)
+        if (propId === 0x0037) {
+          res.subject = baseType === 0x001f
+            ? new TextDecoder("utf-16le").decode(valBytes).replace(/\0+$/, "")
+            : decodeTextSmart(valBytes);
+        }
+        // PR_BODY (0x1000)
+        else if (propId === 0x1000) {
+          res.bodyText = baseType === 0x001f
+            ? new TextDecoder("utf-16le").decode(valBytes).replace(/\0+$/, "")
+            : decodeTextSmart(valBytes);
+        }
+        // PR_BODY_HTML (0x1013)
+        else if (propId === 0x1013) {
+          res.bodyHtml = decodeTextSmart(valBytes);
+        }
+      }
+    }
+  }
+
+  callback(res);
+};
+
 // ==========================================
 // メール / winmail.dat 解析・添付ファイル復元モーダル
 // ==========================================
@@ -5678,14 +5967,21 @@ export default function App() {
           try {
             const arrayBuffer = await file.arrayBuffer();
             const bytes = new Uint8Array(arrayBuffer);
-            const detected = detectEmailFormat(bytes);
 
-            // メール形式または.datファイルの場合はOmniMailで安全に解析
+            // 1. まずOutlook winmail.dat (TNEF) 形式かを高精度パーサーで優先判定
+            const tnefResult = parseTnefRobust(bytes);
+            if (tnefResult && (tnefResult.attachments.length > 0 || tnefResult.body?.text || tnefResult.subject)) {
+              addLog(`Parsed TNEF winmail.dat: ${file.name}, found ${tnefResult.attachments.length} attachments.`);
+              setEmailToExtract({ file, parsed: tnefResult });
+              continue;
+            }
+
+            // 2. TNEF以外（.eml, .msg など）はOmniMailで解析
+            const detected = detectEmailFormat(bytes);
             if (
               detected !== "unknown" ||
               file.name.toLowerCase().endsWith(".eml") ||
-              file.name.toLowerCase().endsWith(".msg") ||
-              file.name.toLowerCase().endsWith(".dat")
+              file.name.toLowerCase().endsWith(".msg")
             ) {
               const parsed = await parseEmail(bytes);
               if (
@@ -5696,7 +5992,7 @@ export default function App() {
                   parsed.subject)
               ) {
                 addLog(
-                  `Parsed email/dat file: ${file.name}, found ${parsed.attachments?.length || 0} attachments.`
+                  `Parsed email file: ${file.name}, found ${parsed.attachments?.length || 0} attachments.`
                 );
                 setEmailToExtract({ file, parsed });
                 continue;
@@ -7034,11 +7330,40 @@ export default function App() {
                   <div className="p-3 bg-white flex flex-col justify-between flex-grow">
                     {file.renderWarning && (
                       <div
-                        className="mb-3 flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-2 text-xs leading-relaxed text-amber-800"
+                        className="mb-3 flex flex-col gap-2 rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-2 text-xs leading-relaxed text-amber-800"
                         role="status"
                       >
-                        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-                        <span>{file.renderWarning}</span>
+                        <div className="flex items-start gap-2">
+                          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                          <span>{file.renderWarning}</span>
+                        </div>
+                        {file.rawFile && (file.name.toLowerCase().endsWith(".dat") || file.name.toLowerCase().endsWith(".eml") || file.name.toLowerCase().endsWith(".msg")) && (
+                          <button
+                            onClick={async () => {
+                              try {
+                                const buf = await file.rawFile.arrayBuffer();
+                                const bytes = new Uint8Array(buf);
+                                const tnef = parseTnefRobust(bytes);
+                                if (tnef && (tnef.attachments.length > 0 || tnef.body?.text || tnef.subject)) {
+                                  setEmailToExtract({ file: file.rawFile, parsed: tnef });
+                                  return;
+                                }
+                                const eml = await parseEmail(bytes);
+                                if (eml) {
+                                  setEmailToExtract({ file: file.rawFile, parsed: eml });
+                                  return;
+                                }
+                                alert("winmail.dat またはメール形式として認識できませんでした。通常のファイルです。");
+                              } catch (err) {
+                                alert("メールファイルの解析に失敗しました: " + (err.message || err));
+                              }
+                            }}
+                            className="w-full py-1.5 px-3 bg-gradient-to-r from-orange-600 to-amber-600 hover:from-orange-500 hover:to-amber-500 text-white rounded-md text-xs font-bold shadow-xs flex items-center justify-center gap-1.5 transition-all cursor-pointer"
+                          >
+                            <Mail className="w-3.5 h-3.5" />
+                            <span>中身（添付ファイル・本文）を展開する</span>
+                          </button>
+                        )}
                       </div>
                     )}
                     <div className="flex items-center space-x-2 mb-2 w-full">
