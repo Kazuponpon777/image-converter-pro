@@ -17,6 +17,7 @@ import html2canvas from "html2canvas";
 import "pdfjs-dist/web/pdf_viewer.css";
 import { renderAsync as renderDocxAsync } from "docx-preview";
 import * as XLSX from "xlsx";
+import { PdfCompareModal } from "./PdfCompareModal";
 import {
   DndContext,
   KeyboardSensor,
@@ -1411,10 +1412,13 @@ const ImageEditor = ({ file, onSave, onClose }) => {
   const [color, setColor] = useState("#000000");
   const [brushSize, setBrushSize] = useState(6); // 枠線の太さ・ブラシサイズ (初期値6px)
   const [fontSize, setFontSize] = useState(40);
-  const [fontFamily, setFontFamily] = useState("sans"); // 選択中のフォント ("sans" | "serif" | "maru" | "hand" | "mono")
+  const [fontFamily, setFontFamily] = useState("sans"); // 選択中のフォント ("sans" | "serif" | "maru" | "hand" | "mono" | etc.)
+  const [customFontInput, setCustomFontInput] = useState(""); // ユーザーPC直接指定フォント名
+  const [textRotation, setTextRotation] = useState(0); // テキスト回転角度 (-180° 〜 180° / 0° 〜 360°)
   const [useTextBg, setUseTextBg] = useState(true);
   const [textBgColor, setTextBgColor] = useState("#ffffff"); // 座布団の背景色
   const [textShowBorder, setTextShowBorder] = useState(true); // 座布団の枠線あり/なし
+  const [textBorderColor, setTextBorderColor] = useState("#d1d5db"); // 座布団の枠線色
   const [shapeStyle, setShapeStyle] = useState("stroke"); // 初期値を枠線(LINE)にして文字を囲みやすくする
   const [stampType, setStampType] = useState("approved");
   const [stampText, setStampText] = useState("佐藤");
@@ -2089,44 +2093,73 @@ const ImageEditor = ({ file, onSave, onClose }) => {
     };
   };
 
-  // 書体オプション（PDF公式文書向け明朝、標準ゴシック、丸ゴシック、手書きメモ、等幅）
+  // 書体オプション（Windows / Mac 標準フォント + POP・手書き・等幅・カスタム）
   const FONT_OPTIONS = [
-    { id: "sans", name: "ゴシック", label: "ゴシック体", desc: "標準・見やすい", family: '"Noto Sans JP", -apple-system, sans-serif' },
-    { id: "serif", name: "明朝体", label: "明朝体", desc: "書類・PDF向け", family: '"Noto Serif JP", "Hiragino Mincho ProN", "Yu Mincho", serif' },
-    { id: "maru", name: "丸ゴシック", label: "丸ゴシック", desc: "POP・やさしい", family: '"Zen Maru Gothic", "Hiragino Maru Gothic ProN", sans-serif' },
+    { id: "sans", name: "ゴシック (標準)", label: "ゴシック体", desc: "標準・見やすい", family: '"Noto Sans JP", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Hiragino Sans", sans-serif' },
+    { id: "meiryo", name: "メイリオ", label: "メイリオ", desc: "Win標準・読みやすい", family: 'Meiryo, "メイリオ", "Hiragino Sans", sans-serif' },
+    { id: "yugothic", name: "游ゴシック", label: "游ゴシック", desc: "Mac/Win標準・洗練", family: '"Yu Gothic", "游ゴシック体", YuGothic, "Hiragino Sans", sans-serif' },
+    { id: "hiragino", name: "ヒラギノ角ゴ", label: "ヒラギノ", desc: "Mac/iOS標準・美麗", family: '"Hiragino Kaku Gothic ProN", "ヒラギノ角ゴ ProN", "Hiragino Sans", sans-serif' },
+    { id: "serif", name: "明朝体", label: "明朝体", desc: "書類・上品・公式", family: '"Noto Serif JP", "Yu Mincho", "游明朝", "Hiragino Mincho ProN", "MS PMincho", serif' },
+    { id: "maru", name: "丸ゴシック", label: "丸ゴシック", desc: "POP・やさしい", family: '"Zen Maru Gothic", "Hiragino Maru Gothic ProN", "BIZ UDPGothic", sans-serif' },
+    { id: "impact", name: "太字インパクト", label: "太字・見出し", desc: "YouTubeサムネ向け", family: 'Impact, "Arial Black", "BIZ UDPGothic", sans-serif' },
+    { id: "pop", name: "ポップ体", label: "POP体", desc: "チラシ・目立たせる", family: '"HG創英角ﾎﾟｯﾌﾟ体", "HGS創英角ﾎﾟｯﾌﾟ体", "Zen Maru Gothic", sans-serif' },
     { id: "hand", name: "手書き風", label: "手書き風", desc: "メモ・付箋向け", family: '"Klee One", "Yomogi", cursive, sans-serif' },
-    { id: "mono", name: "等幅", label: "等幅", desc: "数字・コード", family: 'ui-monospace, Menlo, Monaco, Consolas, monospace' },
+    { id: "mono", name: "等幅", label: "等幅", desc: "数字・コード", family: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace' },
+    { id: "custom", name: "✏️ PCフォント", label: "PCフォント", desc: "PC内のフォント名を直接指定", family: 'sans-serif' },
   ];
 
   const getFontString = (fontSize, fontFamilyKey = "sans", weight = "bold") => {
     switch (fontFamilyKey) {
+      case "meiryo":
+        return `${weight} ${fontSize}px Meiryo, "メイリオ", "Hiragino Sans", sans-serif`;
+      case "yugothic":
+        return `${weight} ${fontSize}px "Yu Gothic", "游ゴシック体", YuGothic, "Hiragino Sans", sans-serif`;
+      case "hiragino":
+        return `${weight} ${fontSize}px "Hiragino Kaku Gothic ProN", "ヒラギノ角ゴ ProN", "Hiragino Sans", sans-serif`;
       case "serif":
-        return `${weight} ${fontSize}px "Noto Serif JP", "Hiragino Mincho ProN", "Yu Mincho", "MS PMincho", serif`;
+        return `${weight} ${fontSize}px "Noto Serif JP", "Yu Mincho", "游明朝", "Hiragino Mincho ProN", "MS PMincho", serif`;
       case "maru":
         return `${weight} ${fontSize}px "Zen Maru Gothic", "Hiragino Maru Gothic ProN", "BIZ UDPGothic", sans-serif`;
+      case "impact":
+        return `900 ${fontSize}px Impact, "Arial Black", "BIZ UDPGothic", sans-serif`;
+      case "pop":
+        return `${weight} ${fontSize}px "HG創英角ﾎﾟｯﾌﾟ体", "HGS創英角ﾎﾟｯﾌﾟ体", "Zen Maru Gothic", sans-serif`;
       case "hand":
         return `600 ${fontSize}px "Klee One", "Yomogi", cursive, sans-serif`;
       case "mono":
         return `${weight} ${fontSize}px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace`;
       case "sans":
-      default:
         return `${weight} ${fontSize}px "Noto Sans JP", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Hiragino Sans", sans-serif`;
+      default:
+        // PC環境の直接指定フォント（またはその他のフォント名）
+        return `${weight} ${fontSize}px "${fontFamilyKey}", sans-serif`;
     }
   };
 
   const getFontCssFamily = (fontFamilyKey = "sans") => {
     switch (fontFamilyKey) {
+      case "meiryo":
+        return 'Meiryo, "メイリオ", "Hiragino Sans", sans-serif';
+      case "yugothic":
+        return '"Yu Gothic", "游ゴシック体", YuGothic, "Hiragino Sans", sans-serif';
+      case "hiragino":
+        return '"Hiragino Kaku Gothic ProN", "ヒラギノ角ゴ ProN", "Hiragino Sans", sans-serif';
       case "serif":
-        return '"Noto Serif JP", "Hiragino Mincho ProN", "Yu Mincho", "MS PMincho", serif';
+        return '"Noto Serif JP", "Yu Mincho", "游明朝", "Hiragino Mincho ProN", "MS PMincho", serif';
       case "maru":
         return '"Zen Maru Gothic", "Hiragino Maru Gothic ProN", "BIZ UDPGothic", sans-serif';
+      case "impact":
+        return 'Impact, "Arial Black", "BIZ UDPGothic", sans-serif';
+      case "pop":
+        return '"HG創英角ﾎﾟｯﾌﾟ体", "HGS創英角ﾎﾟｯﾌﾟ体", "Zen Maru Gothic", sans-serif';
       case "hand":
         return '"Klee One", "Yomogi", cursive, sans-serif';
       case "mono":
         return 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace';
       case "sans":
-      default:
         return '"Noto Sans JP", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Hiragino Sans", sans-serif';
+      default:
+        return `"${fontFamilyKey}", sans-serif`;
     }
   };
 
@@ -2158,12 +2191,25 @@ const ImageEditor = ({ file, onSave, onClose }) => {
     setHistory((prev) => [...prev.slice(-19), cloneElements(currentElements)]);
   };
 
-  // Draw text element supporting multiline & za-buton (background fill & border options)
+  // Draw text element supporting multiline & za-buton (background fill & border options) & rotation
   const drawTextElement = (ctx, el) => {
-    // [修正] バグチェック部指摘: 空文字または空白のみのテキストはゴミ描画防止のためスキップ
+    // 空文字または空白のみのテキストはゴミ描画防止のためスキップ
     if (!el.text || !el.text.trim()) return;
 
     const { lines, fontSize, lineHeight, p, maxWidth, totalHeight } = getTextMetrics(ctx, el);
+
+    ctx.save();
+
+    // 🔄 回転角度の適用 (テキスト矩形の中心を原点に回転)
+    const rot = (el.rotation || 0) * (Math.PI / 180);
+    const centerX = el.x + maxWidth / 2;
+    const centerY = el.y + totalHeight / 2;
+
+    if (rot !== 0) {
+      ctx.translate(centerX, centerY);
+      ctx.rotate(rot);
+      ctx.translate(-centerX, -centerY);
+    }
 
     ctx.font = getFontString(fontSize, el.fontFamily || "sans", "bold");
     ctx.textBaseline = "top";
@@ -2196,6 +2242,8 @@ const ImageEditor = ({ file, onSave, onClose }) => {
     lines.forEach((line, idx) => {
       ctx.fillText(line, el.x, el.y + idx * lineHeight + p * 0.15);
     });
+
+    ctx.restore();
   };
 
   // 矢印（アロー）の描画
@@ -2247,7 +2295,25 @@ const ImageEditor = ({ file, onSave, onClose }) => {
     ctx.restore();
   };
 
-  // 吹き出し（スピーチバルーン）の描画（縦横比自由）
+  // 吹き出し（スピーチバルーン）のしっぽ先端座標取得（未設定時は初期位置を自動計算）
+  const getCalloutTailPos = (el) => {
+    const xMin = Math.min(el.x, el.x + el.w);
+    const yMin = Math.min(el.y, el.y + el.h);
+    const w = Math.abs(el.w);
+    const h = Math.abs(el.h);
+    if (el.tailX !== undefined && el.tailY !== undefined) {
+      return { x: el.tailX, y: el.tailY };
+    }
+    const tailDir = el.tailDirection || "bottom-left";
+    const tailH = Math.max(25, h * 0.35);
+    if (tailDir === "bottom-left") return { x: xMin + w * 0.2, y: yMin + h + tailH };
+    if (tailDir === "bottom-right") return { x: xMin + w * 0.8, y: yMin + h + tailH };
+    if (tailDir === "top-left") return { x: xMin + w * 0.2, y: yMin - tailH };
+    if (tailDir === "top-right") return { x: xMin + w * 0.8, y: yMin - tailH };
+    return { x: xMin + w * 0.2, y: yMin + h + tailH };
+  };
+
+  // 吹き出し（スピーチバルーン）の描画（しっぽ自由ドラッグ対応）
   const drawCalloutElement = (ctx, el) => {
     const xMin = Math.min(el.x, el.x + el.w);
     const yMin = Math.min(el.y, el.y + el.h);
@@ -2256,46 +2322,64 @@ const ImageEditor = ({ file, onSave, onClose }) => {
     if (w < 20 || h < 20) return;
 
     ctx.save();
-    const radius = Math.min(12, w * 0.15, h * 0.15);
-    const tailW = Math.min(24, w * 0.25);
-    const tailH = Math.min(20, h * 0.3);
-    const tailDir = el.tailDirection || "bottom-left";
+    const radius = Math.min(14, w * 0.15, h * 0.15);
+    const cx = xMin + w / 2;
+    const cy = yMin + h / 2;
 
-    // 吹き出しのパス構築
+    const tail = getCalloutTailPos(el);
+    const tx = tail.x;
+    const ty = tail.y;
+
+    const dx = tx - cx;
+    const dy = ty - cy;
+    const baseW = Math.min(32, Math.max(16, (w + h) * 0.12));
+
+    // 先端が上下・左右のどちらの辺から出るか判定
+    const nx = dx / (w / 2 || 1);
+    const ny = dy / (h / 2 || 1);
+    const isVertical = Math.abs(ny) >= Math.abs(nx);
+
+    // 吹き出しのパス構築（本体角丸四角形としっぽ三角形の一体結合パス）
     ctx.beginPath();
     ctx.moveTo(xMin + radius, yMin);
 
     // 上辺
-    if (tailDir === "top-left") {
-      ctx.lineTo(xMin + w * 0.2, yMin);
-      ctx.lineTo(xMin + w * 0.15, yMin - tailH);
-      ctx.lineTo(xMin + w * 0.2 + tailW, yMin);
-    } else if (tailDir === "top-right") {
-      ctx.lineTo(xMin + w * 0.7, yMin);
-      ctx.lineTo(xMin + w * 0.85, yMin - tailH);
-      ctx.lineTo(xMin + w * 0.7 + tailW, yMin);
+    if (isVertical && ny < 0) {
+      const baseX = Math.max(xMin + radius + baseW / 2, Math.min(xMin + w - radius - baseW / 2, tx));
+      ctx.lineTo(baseX - baseW / 2, yMin);
+      ctx.lineTo(tx, ty);
+      ctx.lineTo(baseX + baseW / 2, yMin);
     }
     ctx.lineTo(xMin + w - radius, yMin);
     ctx.arcTo(xMin + w, yMin, xMin + w, yMin + radius, radius);
 
     // 右辺
+    if (!isVertical && nx >= 0) {
+      const baseY = Math.max(yMin + radius + baseW / 2, Math.min(yMin + h - radius - baseW / 2, ty));
+      ctx.lineTo(xMin + w, baseY - baseW / 2);
+      ctx.lineTo(tx, ty);
+      ctx.lineTo(xMin + w, baseY + baseW / 2);
+    }
     ctx.lineTo(xMin + w, yMin + h - radius);
     ctx.arcTo(xMin + w, yMin + h, xMin + w - radius, yMin + h, radius);
 
     // 下辺
-    if (tailDir === "bottom-right") {
-      ctx.lineTo(xMin + w * 0.7 + tailW, yMin + h);
-      ctx.lineTo(xMin + w * 0.85, yMin + h + tailH);
-      ctx.lineTo(xMin + w * 0.7, yMin + h);
-    } else if (tailDir === "bottom-left") {
-      ctx.lineTo(xMin + w * 0.2 + tailW, yMin + h);
-      ctx.lineTo(xMin + w * 0.15, yMin + h + tailH);
-      ctx.lineTo(xMin + w * 0.2, yMin + h);
+    if (isVertical && ny >= 0) {
+      const baseX = Math.max(xMin + radius + baseW / 2, Math.min(xMin + w - radius - baseW / 2, tx));
+      ctx.lineTo(baseX + baseW / 2, yMin + h);
+      ctx.lineTo(tx, ty);
+      ctx.lineTo(baseX - baseW / 2, yMin + h);
     }
     ctx.lineTo(xMin + radius, yMin + h);
     ctx.arcTo(xMin, yMin + h, xMin, yMin + h - radius, radius);
 
     // 左辺
+    if (!isVertical && nx < 0) {
+      const baseY = Math.max(yMin + radius + baseW / 2, Math.min(yMin + h - radius - baseW / 2, ty));
+      ctx.lineTo(xMin, baseY + baseW / 2);
+      ctx.lineTo(tx, ty);
+      ctx.lineTo(xMin, baseY - baseW / 2);
+    }
     ctx.lineTo(xMin, yMin + radius);
     ctx.arcTo(xMin, yMin, xMin + radius, yMin, radius);
     ctx.closePath();
@@ -2464,7 +2548,12 @@ const ImageEditor = ({ file, onSave, onClose }) => {
           }
         }
       } else if (el.type === "text") {
-        drawTextElement(ctx, el);
+        // インプレース直接文字入力中は二重表示を防ぐためキャンバス側の一時描画をスキップ
+        if (editingTextState && editingTextState.id === el.id) {
+          // skip
+        } else {
+          drawTextElement(ctx, el);
+        }
       } else if (el.type === "arrow") {
         drawArrowElement(ctx, el);
       } else if (el.type === "callout") {
@@ -2595,12 +2684,22 @@ const ImageEditor = ({ file, onSave, onClose }) => {
 
         if (el.type === "text") {
           const { p, maxWidth, totalHeight } = getTextMetrics(ctx, el);
+          ctx.save();
+          const rot = (el.rotation || 0) * (Math.PI / 180);
+          const centerX = el.x + maxWidth / 2;
+          const centerY = el.y + totalHeight / 2;
+          if (rot !== 0) {
+            ctx.translate(centerX, centerY);
+            ctx.rotate(rot);
+            ctx.translate(-centerX, -centerY);
+          }
           ctx.strokeRect(
             el.x - p - 6,
             el.y - p - 6,
             maxWidth + p * 2 + 12,
             totalHeight + p * 2 + 12
           );
+          ctx.restore();
         } else if (el.type === "rect" || el.type === "ellipse" || el.type === "callout" || el.type === "sticky" || el.type === "mosaic" || el.type === "mask") {
           const padding = 6;
           const xMin = Math.min(el.x, el.x + el.w);
@@ -2631,6 +2730,27 @@ const ImageEditor = ({ file, onSave, onClose }) => {
               ctx.fillRect(c.x - hSize / 2, c.y - hSize / 2, hSize, hSize);
               ctx.strokeRect(c.x - hSize / 2, c.y - hSize / 2, hSize, hSize);
             });
+            // 吹き出し（callout）の場合：しっぽ先端にぎゅっと引っ張れる丸いオレンジ色のハンドルを描画
+            if (el.type === "callout") {
+              const tail = getCalloutTailPos(el);
+              ctx.save();
+              ctx.beginPath();
+              ctx.arc(tail.x, tail.y, 8, 0, Math.PI * 2);
+              ctx.fillStyle = "#f97316";
+              ctx.fill();
+              ctx.lineWidth = 2.5;
+              ctx.strokeStyle = "#ffffff";
+              ctx.stroke();
+
+              // 外側のリングインジケーター
+              ctx.beginPath();
+              ctx.arc(tail.x, tail.y, 12, 0, Math.PI * 2);
+              ctx.lineWidth = 1.5;
+              ctx.strokeStyle = "#f97316";
+              ctx.stroke();
+              ctx.restore();
+            }
+
             ctx.setLineDash([8, 6]);
           }
         } else if (el.type === "arrow") {
@@ -2811,11 +2931,22 @@ const ImageEditor = ({ file, onSave, onClose }) => {
       const el = elements[i];
       if (el.type === "text") {
         const { p, maxWidth, totalHeight } = getTextMetrics(ctx, el);
+        let checkX = canvasPos.x;
+        let checkY = canvasPos.y;
+        if (el.rotation) {
+          const rad = (-el.rotation * Math.PI) / 180;
+          const cx = el.x + maxWidth / 2;
+          const cy = el.y + totalHeight / 2;
+          const dx = canvasPos.x - cx;
+          const dy = canvasPos.y - cy;
+          checkX = cx + dx * Math.cos(rad) - dy * Math.sin(rad);
+          checkY = cy + dx * Math.sin(rad) + dy * Math.cos(rad);
+        }
         if (
-          canvasPos.x >= el.x - p - 8 &&
-          canvasPos.x <= el.x + maxWidth + p + 8 &&
-          canvasPos.y >= el.y - p - 8 &&
-          canvasPos.y <= el.y + totalHeight + p + 8
+          checkX >= el.x - p - 8 &&
+          checkX <= el.x + maxWidth + p + 8 &&
+          checkY >= el.y - p - 8 &&
+          checkY <= el.y + totalHeight + p + 8
         ) {
           return el;
         }
@@ -2904,6 +3035,16 @@ const ImageEditor = ({ file, onSave, onClose }) => {
             points: el.points.map((p) => ({ x: p.x + dx, y: p.y + dy }))
           };
         }
+        if (el.type === "callout") {
+          const currentTail = getCalloutTailPos(el);
+          return {
+            ...el,
+            x: el.x + dx,
+            y: el.y + dy,
+            tailX: currentTail.x + dx,
+            tailY: currentTail.y + dy
+          };
+        }
         return {
           ...el,
           x: el.x + dx,
@@ -2913,11 +3054,19 @@ const ImageEditor = ({ file, onSave, onClose }) => {
     );
   };
 
-  // 選択中要素のリサイズハンドル（四隅・矢印先端等）の当たり判定
+  // 選択中要素のリサイズハンドル（四隅・矢印先端・吹き出しのしっぽ等）の当たり判定
   const getResizeHandleAtPos = (pos, el) => {
     if (!el) return null;
     const padding = 6;
     const hitRadius = 14;
+
+    // 吹き出しのしっぽ先端ハンドルの当たり判定
+    if (el.type === "callout") {
+      const tail = getCalloutTailPos(el);
+      if (Math.hypot(pos.x - tail.x, pos.y - tail.y) <= 18) {
+        return "tail";
+      }
+    }
 
     if (el.type === "rect" || el.type === "ellipse" || el.type === "callout" || el.type === "sticky") {
       const xMin = Math.min(el.x, el.x + el.w) - padding;
@@ -2995,7 +3144,9 @@ const ImageEditor = ({ file, onSave, onClose }) => {
             origY: curEl.y,
             origW: curEl.w,
             origH: curEl.h,
-            origR: curEl.r
+            origR: curEl.r,
+            origTailX: curEl.tailX !== undefined ? curEl.tailX : (curEl.type === "callout" ? getCalloutTailPos(curEl).x : undefined),
+            origTailY: curEl.tailY !== undefined ? curEl.tailY : (curEl.type === "callout" ? getCalloutTailPos(curEl).y : undefined)
           };
           return;
         }
@@ -3016,6 +3167,9 @@ const ImageEditor = ({ file, onSave, onClose }) => {
         dragStartPos.current = pos;
         if (hit.type === "brush") {
           elementStartPos.current = hit.points.map((p) => ({ ...p }));
+        } else if (hit.type === "callout") {
+          const currentTail = getCalloutTailPos(hit);
+          elementStartPos.current = { x: hit.x, y: hit.y, tailX: currentTail.x, tailY: currentTail.y };
         } else {
           elementStartPos.current = { x: hit.x, y: hit.y };
         }
@@ -3127,7 +3281,9 @@ const ImageEditor = ({ file, onSave, onClose }) => {
         useBg: useTextBg,
         bgColor: textBgColor,
         showBorder: textShowBorder,
-        fontFamily: fontFamily
+        borderColor: textBorderColor,
+        fontFamily: fontFamily,
+        rotation: textRotation || 0
       });
     }
   };
@@ -3169,6 +3325,14 @@ const ImageEditor = ({ file, onSave, onClose }) => {
       setElements((prev) =>
         prev.map((el) => {
           if (el.id !== selectedId) return el;
+          if (el.type === "callout" && handle === "tail") {
+            // 吹き出しのしっぽをマウスの動きに合わせて引っ張る
+            return {
+              ...el,
+              tailX: Math.round(pos.x),
+              tailY: Math.round(pos.y)
+            };
+          }
           if (el.type === "rect" || el.type === "ellipse" || el.type === "callout" || el.type === "sticky") {
             let newX = origX;
             let newY = origY;
@@ -3223,6 +3387,15 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                 x: startPoints[idx].x + dx,
                 y: startPoints[idx].y + dy
               }))
+            };
+          } else if (el.type === "callout") {
+            const start = elementStartPos.current;
+            return {
+              ...el,
+              x: start.x + dx,
+              y: start.y + dy,
+              tailX: start.tailX !== undefined ? start.tailX + dx : undefined,
+              tailY: start.tailY !== undefined ? start.tailY + dy : undefined
             };
           } else {
             const start = elementStartPos.current;
@@ -3282,7 +3455,13 @@ const ImageEditor = ({ file, onSave, onClose }) => {
             if (el.type === "arrow") {
               return { ...el, w: 100, h: -70 };
             } else if (el.type === "callout") {
-              return { ...el, w: 180, h: 90 };
+              return {
+                ...el,
+                w: 180,
+                h: 90,
+                tailX: el.x + 36,
+                tailY: el.y + 90 + 35
+              };
             } else if (el.type === "sticky") {
               return { ...el, w: 140, h: 140 };
             } else if (el.type === "rect") {
@@ -3297,6 +3476,17 @@ const ImageEditor = ({ file, onSave, onClose }) => {
             const minY = Math.min(el.y, el.y + el.h);
             const w = Math.abs(el.w);
             const h = Math.abs(el.h);
+            if (el.type === "callout" && el.tailX === undefined) {
+              return {
+                ...el,
+                x: minX,
+                y: minY,
+                w,
+                h,
+                tailX: minX + w * 0.2,
+                tailY: minY + h + Math.max(30, h * 0.35)
+              };
+            }
             return { ...el, x: minX, y: minY, w, h };
           }
           return el;
@@ -3352,8 +3542,12 @@ const ImageEditor = ({ file, onSave, onClose }) => {
           useBg: hit.useBg,
           bgColor: hit.bgColor || "#ffffff",
           showBorder: hit.showBorder !== false,
-          fontFamily: hit.fontFamily || fontFamily
+          borderColor: hit.borderColor || textBorderColor,
+          fontFamily: hit.fontFamily || fontFamily,
+          rotation: hit.rotation || 0
         });
+        if (hit.borderColor) setTextBorderColor(hit.borderColor);
+        if (hit.rotation !== undefined) setTextRotation(hit.rotation);
         setSelectedId(hit.id);
       } else if (hit.type === "callout" || hit.type === "sticky") {
         const xMin = Math.min(hit.x, hit.x + hit.w);
@@ -3413,7 +3607,9 @@ const ImageEditor = ({ file, onSave, onClose }) => {
             useBg: editingTextState.useBg,
             bgColor: editingTextState.bgColor || "#ffffff",
             showBorder: editingTextState.showBorder !== false,
-            fontFamily: editingTextState.fontFamily || el.fontFamily || fontFamily
+            borderColor: editingTextState.borderColor || el.borderColor || textBorderColor,
+            fontFamily: editingTextState.fontFamily || el.fontFamily || fontFamily,
+            rotation: editingTextState.rotation !== undefined ? editingTextState.rotation : (el.rotation || 0)
           };
         })
       );
@@ -3431,7 +3627,9 @@ const ImageEditor = ({ file, onSave, onClose }) => {
         useBg: editingTextState.useBg,
         bgColor: editingTextState.bgColor || "#ffffff",
         showBorder: editingTextState.showBorder !== false,
-        fontFamily: editingTextState.fontFamily || fontFamily
+        borderColor: editingTextState.borderColor || textBorderColor,
+        fontFamily: editingTextState.fontFamily || fontFamily,
+        rotation: editingTextState.rotation || 0
       };
       setElements((prev) => [...prev, newEl]);
       setSelectedId(newEl.id);
@@ -3441,10 +3639,12 @@ const ImageEditor = ({ file, onSave, onClose }) => {
     // 作業中のフォントサイズやスタイルをキープ（次回に引き継ぐ）
     if (editingTextState.fontSize) setFontSize(editingTextState.fontSize);
     if (editingTextState.fontFamily) setFontFamily(editingTextState.fontFamily);
+    if (editingTextState.rotation !== undefined) setTextRotation(editingTextState.rotation);
     if (editingTextState.color) setColor(editingTextState.color);
     if (editingTextState.useBg !== undefined) setUseTextBg(editingTextState.useBg);
     if (editingTextState.bgColor) setTextBgColor(editingTextState.bgColor);
     if (editingTextState.showBorder !== undefined) setTextShowBorder(editingTextState.showBorder);
+    if (editingTextState.borderColor) setTextBorderColor(editingTextState.borderColor);
 
     setEditingTextState(null);
   };
@@ -3508,9 +3708,101 @@ const ImageEditor = ({ file, onSave, onClose }) => {
     if (updates.useBg !== undefined) setUseTextBg(updates.useBg);
     if (updates.bgColor) setTextBgColor(updates.bgColor);
     if (updates.showBorder !== undefined) setTextShowBorder(updates.showBorder);
+    if (updates.borderColor) setTextBorderColor(updates.borderColor);
   };
 
   const selectedElement = elements.find((e) => e.id === selectedId);
+
+  // 上部固定スリムテキストツールバー用のアクティブ判定とハンドラー
+  const isTextModeActive = Boolean(
+    editingTextState ||
+    (selectedElement && selectedElement.type === "text") ||
+    tool === "text"
+  );
+
+  const activeTextEl = editingTextState || (selectedElement?.type === "text" ? selectedElement : null);
+  const activeFontSize = activeTextEl ? (activeTextEl.fontSize || fontSize) : fontSize;
+  const activeFontFamily = activeTextEl ? (activeTextEl.fontFamily || fontFamily) : fontFamily;
+  const activeColor = activeTextEl ? (activeTextEl.color || color) : color;
+  const activeUseBg = activeTextEl ? (activeTextEl.useBg ?? useTextBg) : useTextBg;
+  const activeBgColor = activeTextEl ? (activeTextEl.bgColor || textBgColor) : textBgColor;
+  const activeShowBorder = activeTextEl ? (activeTextEl.showBorder ?? textShowBorder) : textShowBorder;
+  const activeBorderColor = activeTextEl ? (activeTextEl.borderColor || textBorderColor) : textBorderColor;
+  const activeRotation = activeTextEl ? (activeTextEl.rotation ?? textRotation) : textRotation;
+
+  const handleToolbarFontSize = (size) => {
+    const s = Math.max(8, Math.min(200, Number(size) || 24));
+    setFontSize(s);
+    if (editingTextState) {
+      setEditingTextState((prev) => ({ ...prev, fontSize: s }));
+    } else if (selectedElement?.type === "text") {
+      updateSelectedElement({ fontSize: s });
+    }
+  };
+
+  const handleToolbarFontFamily = (family) => {
+    setFontFamily(family);
+    if (editingTextState) {
+      setEditingTextState((prev) => ({ ...prev, fontFamily: family }));
+    } else if (selectedElement?.type === "text") {
+      updateSelectedElement({ fontFamily: family });
+    }
+  };
+
+  const handleToolbarColor = (c) => {
+    setColor(c);
+    if (editingTextState) {
+      setEditingTextState((prev) => ({ ...prev, color: c }));
+    } else if (selectedElement?.type === "text") {
+      updateSelectedElement({ color: c });
+    }
+  };
+
+  const handleToolbarUseBg = (val) => {
+    setUseTextBg(val);
+    if (editingTextState) {
+      setEditingTextState((prev) => ({ ...prev, useBg: val }));
+    } else if (selectedElement?.type === "text") {
+      updateSelectedElement({ useBg: val });
+    }
+  };
+
+  const handleToolbarBgColor = (c) => {
+    setTextBgColor(c);
+    if (editingTextState) {
+      setEditingTextState((prev) => ({ ...prev, bgColor: c }));
+    } else if (selectedElement?.type === "text") {
+      updateSelectedElement({ bgColor: c });
+    }
+  };
+
+  const handleToolbarShowBorder = (val) => {
+    setTextShowBorder(val);
+    if (editingTextState) {
+      setEditingTextState((prev) => ({ ...prev, showBorder: val }));
+    } else if (selectedElement?.type === "text") {
+      updateSelectedElement({ showBorder: val });
+    }
+  };
+
+  const handleToolbarBorderColor = (c) => {
+    setTextBorderColor(c);
+    if (editingTextState) {
+      setEditingTextState((prev) => ({ ...prev, borderColor: c }));
+    } else if (selectedElement?.type === "text") {
+      updateSelectedElement({ borderColor: c });
+    }
+  };
+
+  const handleToolbarRotation = (deg) => {
+    const norm = ((Number(deg) % 360) + 360) % 360;
+    setTextRotation(norm);
+    if (editingTextState) {
+      setEditingTextState((prev) => ({ ...prev, rotation: norm }));
+    } else if (selectedElement?.type === "text") {
+      updateSelectedElement({ rotation: norm });
+    }
+  };
 
   const handleSave = () => {
     const canvas = canvasRef.current;
@@ -4210,8 +4502,11 @@ const ImageEditor = ({ file, onSave, onClose }) => {
 
                   {/* 書体（フォント）の変更 */}
                   <div className="space-y-1.5 pt-1">
-                    <span className="text-xs text-gray-300">書体（フォント）</span>
-                    <div className="grid grid-cols-3 gap-1">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-gray-300 font-semibold">書体（フォント）</span>
+                      <span className="text-[10px] text-blue-300">Win/Mac標準フォント対応</span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-1 max-h-36 overflow-y-auto pr-0.5">
                       {FONT_OPTIONS.map((f) => {
                         const isSelected = (selectedElement.fontFamily || "sans") === f.id;
                         return (
@@ -4219,18 +4514,86 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                             key={f.id}
                             type="button"
                             onClick={() => updateSelectedElement({ fontFamily: f.id })}
-                            className={`px-2 py-1.5 rounded-lg text-xs font-bold transition-all border ${
+                            className={`px-2 py-1.5 rounded-lg text-xs font-bold transition-all border text-left flex flex-col ${
                               isSelected
                                 ? "bg-blue-600 border-blue-400 text-white shadow-xs"
                                 : "bg-gray-800 border-gray-700 text-gray-300 hover:text-white hover:bg-gray-750"
                             }`}
                             style={{ fontFamily: f.family }}
                           >
-                            {f.name}
+                            <span className="truncate">{f.name}</span>
+                            <span className="text-[9px] opacity-75 font-normal">{f.desc}</span>
                           </button>
                         );
                       })}
                     </div>
+                    {/* PCフォント直接指定時の入力欄 */}
+                    {(selectedElement.fontFamily === "custom" || (!FONT_OPTIONS.some(f => f.id === selectedElement.fontFamily) && selectedElement.fontFamily)) && (
+                      <div className="mt-1.5 p-2 bg-blue-900/40 rounded-lg border border-blue-700/60 animate-fadeIn space-y-1">
+                        <label className="text-[10px] text-blue-200 font-bold block">
+                          PC内フォント名を直接指定 (例: Meiryo, Yu Gothic, HG創英角ﾎﾟｯﾌﾟ体, Impact)
+                        </label>
+                        <input
+                          type="text"
+                          value={selectedElement.fontFamily === "custom" ? customFontInput : (selectedElement.fontFamily || "")}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setCustomFontInput(val);
+                            updateSelectedElement({ fontFamily: val || "sans" });
+                          }}
+                          placeholder="フォント名を入力..."
+                          className="w-full bg-gray-900 text-white text-xs border border-blue-500/60 rounded px-2 py-1 focus:ring-1 focus:ring-blue-400 font-mono"
+                        />
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 🔄 文字の回転（角度調整） */}
+                  <div className="space-y-1.5 pt-1.5 border-t border-blue-800/40">
+                    <div className="flex justify-between items-center text-xs">
+                      <span className="text-gray-300 font-semibold flex items-center gap-1">
+                        <RotateCw className="w-3.5 h-3.5 text-blue-400" />
+                        文字の回転（角度）
+                      </span>
+                      <span className="text-blue-400 font-mono font-bold bg-blue-900/50 px-1.5 py-0.5 rounded border border-blue-800/60 text-[11px]">
+                        {selectedElement.rotation || 0}°
+                      </span>
+                    </div>
+
+                    {/* クイック角度ボタン */}
+                    <div className="grid grid-cols-5 gap-1">
+                      {[
+                        { label: "0°", val: 0, title: "水平 (標準)" },
+                        { label: "45°", val: 45, title: "斜め右上" },
+                        { label: "90°", val: 90, title: "縦書き風・右向き" },
+                        { label: "-45°", val: -45, title: "斜め左上" },
+                        { label: "180°", val: 180, title: "反転" }
+                      ].map((btn) => (
+                        <button
+                          key={btn.label}
+                          type="button"
+                          onClick={() => updateSelectedElement({ rotation: btn.val })}
+                          title={btn.title}
+                          className={`py-1 text-[11px] font-bold rounded border transition-colors ${
+                            (selectedElement.rotation || 0) === btn.val
+                              ? "bg-blue-600 border-blue-400 text-white shadow-xs"
+                              : "bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-750 hover:text-white"
+                          }`}
+                        >
+                          {btn.label}
+                        </button>
+                      ))}
+                    </div>
+
+                    <input
+                      type="range"
+                      min="-180"
+                      max="180"
+                      step="1"
+                      value={selectedElement.rotation || 0}
+                      onChange={(e) => updateSelectedElement({ rotation: parseInt(e.target.value, 10) })}
+                      className="w-full h-1.5 bg-gray-750 rounded-lg appearance-none cursor-pointer mt-1"
+                    />
                   </div>
 
                   {/* 文字色 */}
@@ -4546,9 +4909,12 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                     />
                   </div>
 
-                  {/* しっぽの方向 */}
+                  {/* しっぽの方向・位置 */}
                   <div className="space-y-1">
-                    <span className="text-xs text-gray-300">しっぽの向き</span>
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-gray-300">しっぽの向き</span>
+                      <span className="text-[10px] text-orange-400 font-medium">● 先端をドラッグして自由伸縮可</span>
+                    </div>
                     <div className="grid grid-cols-4 gap-1">
                       {[
                         { id: "bottom-left", label: "左下" },
@@ -4559,7 +4925,19 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                         <button
                           key={dir.id}
                           type="button"
-                          onClick={() => updateSelectedElement({ tailDirection: dir.id })}
+                          onClick={() => {
+                            const xMin = Math.min(selectedElement.x, selectedElement.x + selectedElement.w);
+                            const yMin = Math.min(selectedElement.y, selectedElement.y + selectedElement.h);
+                            const w = Math.abs(selectedElement.w);
+                            const h = Math.abs(selectedElement.h);
+                            const tailH = Math.max(30, h * 0.4);
+                            let tx = xMin + w * 0.2;
+                            let ty = yMin + h + tailH;
+                            if (dir.id === "bottom-right") { tx = xMin + w * 0.8; ty = yMin + h + tailH; }
+                            else if (dir.id === "top-left") { tx = xMin + w * 0.2; ty = yMin - tailH; }
+                            else if (dir.id === "top-right") { tx = xMin + w * 0.8; ty = yMin - tailH; }
+                            updateSelectedElement({ tailDirection: dir.id, tailX: tx, tailY: ty });
+                          }}
                           className={`py-1 text-[11px] rounded border transition-colors ${
                             (selectedElement.tailDirection || "bottom-left") === dir.id
                               ? "bg-blue-600 border-blue-500 text-white font-bold"
@@ -4857,8 +5235,11 @@ const ImageEditor = ({ file, onSave, onClose }) => {
 
               {/* 書体（フォント）の初期設定 */}
               <div className="space-y-1.5 pt-1">
-                <span className="text-xs text-gray-400 font-medium">基本フォント（書体）</span>
-                <div className="grid grid-cols-2 gap-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-gray-400 font-medium">基本フォント（書体）</span>
+                  <span className="text-[10px] text-orange-400">Win/Mac対応</span>
+                </div>
+                <div className="grid grid-cols-2 gap-1.5 max-h-40 overflow-y-auto pr-0.5">
                   {FONT_OPTIONS.map((f) => {
                     const isSelected = fontFamily === f.id;
                     return (
@@ -4873,12 +5254,76 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                         }`}
                         style={{ fontFamily: f.family }}
                       >
-                        <span>{f.name}</span>
-                        <span className="text-[10px] opacity-75 font-normal">{f.desc}</span>
+                        <span className="truncate">{f.name}</span>
+                        <span className="text-[9px] opacity-75 font-normal">{f.desc}</span>
                       </button>
                     );
                   })}
                 </div>
+                {/* PCフォント直接指定入力 */}
+                {fontFamily === "custom" && (
+                  <div className="mt-1 p-2 bg-gray-900 rounded-lg border border-orange-500/40 animate-fadeIn space-y-1">
+                    <label className="text-[10px] text-orange-300 font-bold block">
+                      PC内フォント名を直接指定 (例: Meiryo, Yu Gothic, Impact など)
+                    </label>
+                    <input
+                      type="text"
+                      value={customFontInput}
+                      onChange={(e) => {
+                        setCustomFontInput(e.target.value);
+                      }}
+                      placeholder="フォント名を入力..."
+                      className="w-full bg-gray-800 text-white text-xs border border-gray-700 rounded px-2 py-1 focus:ring-1 focus:ring-orange-500 font-mono"
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* 🔄 文字の初期回転角度 */}
+              <div className="space-y-1.5 pt-1.5 border-t border-gray-800">
+                <div className="flex justify-between items-center text-xs">
+                  <span className="text-gray-400 font-medium flex items-center gap-1">
+                    <RotateCw className="w-3.5 h-3.5 text-orange-400" />
+                    文字の角度（回転）
+                  </span>
+                  <span className="text-orange-400 font-mono font-bold bg-gray-900 px-1.5 py-0.5 rounded border border-gray-700 text-[11px]">
+                    {textRotation}°
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-5 gap-1">
+                  {[
+                    { label: "0°", val: 0, title: "水平 (標準)" },
+                    { label: "45°", val: 45, title: "斜め右上" },
+                    { label: "90°", val: 90, title: "縦書き風" },
+                    { label: "-45°", val: -45, title: "斜め左上" },
+                    { label: "180°", val: 180, title: "反転" }
+                  ].map((btn) => (
+                    <button
+                      key={btn.label}
+                      type="button"
+                      onClick={() => setTextRotation(btn.val)}
+                      title={btn.title}
+                      className={`py-1 text-[11px] font-bold rounded border transition-colors ${
+                        textRotation === btn.val
+                          ? "bg-orange-600 border-orange-500 text-white shadow-xs"
+                          : "bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-750 hover:text-white"
+                      }`}
+                    >
+                      {btn.label}
+                    </button>
+                  ))}
+                </div>
+
+                <input
+                  type="range"
+                  min="-180"
+                  max="180"
+                  step="1"
+                  value={textRotation}
+                  onChange={(e) => setTextRotation(parseInt(e.target.value, 10))}
+                  className="w-full h-1.5 bg-gray-750 rounded-lg appearance-none cursor-pointer mt-1"
+                />
               </div>
 
               {/* 座布団ON/OFF */}
@@ -5113,6 +5558,203 @@ const ImageEditor = ({ file, onSave, onClose }) => {
 
         {/* Canvas Display & Interaction Area (右側独立ビューポート) */}
         <div className="flex-grow h-full relative overflow-hidden flex flex-col min-w-0 bg-gray-950">
+          {/* 上部固定スリムテキストツールバー（テキスト操作時に1行で常駐表示） */}
+          {isTextModeActive && (
+            <div className="h-11 bg-gray-900 border-b border-gray-800 px-3 py-1 flex items-center justify-between gap-2 shrink-0 z-30 shadow-md text-xs overflow-x-auto select-none">
+              <div className="flex items-center space-x-2 shrink-0">
+                <span className="font-bold text-orange-400 flex items-center gap-1">
+                  <Type className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">文字ツール</span>
+                </span>
+
+                {/* フォント選択 */}
+                <select
+                  value={activeFontFamily}
+                  onChange={(e) => handleToolbarFontFamily(e.target.value)}
+                  className="bg-gray-800 border border-gray-700 text-gray-200 rounded px-2 py-1 text-xs focus:ring-1 focus:ring-orange-500 focus:outline-none"
+                  title="フォント種類"
+                >
+                  {FONT_OPTIONS.map((f) => (
+                    <option key={f.value} value={f.value}>
+                      {f.name}
+                    </option>
+                  ))}
+                </select>
+
+                {/* フォントサイズ */}
+                <div className="flex items-center bg-gray-800 rounded border border-gray-700 overflow-hidden" title="文字サイズ">
+                  <button
+                    type="button"
+                    onClick={() => handleToolbarFontSize(Math.max(10, activeFontSize - 4))}
+                    className="px-2 py-1 hover:bg-gray-700 text-gray-300 font-bold transition-colors"
+                  >
+                    -
+                  </button>
+                  <input
+                    type="number"
+                    min="8"
+                    max="200"
+                    value={activeFontSize}
+                    onChange={(e) => handleToolbarFontSize(Number(e.target.value))}
+                    className="w-12 bg-transparent text-center text-xs font-bold text-white focus:outline-none"
+                  />
+                  <span className="text-[10px] text-gray-400 pr-1">px</span>
+                  <button
+                    type="button"
+                    onClick={() => handleToolbarFontSize(Math.min(200, activeFontSize + 4))}
+                    className="px-2 py-1 hover:bg-gray-700 text-gray-300 font-bold transition-colors"
+                  >
+                    +
+                  </button>
+                </div>
+
+                {/* 文字色 */}
+                <div className="flex items-center space-x-1 pl-1 border-l border-gray-800">
+                  <input
+                    type="color"
+                    value={activeColor}
+                    onChange={(e) => handleToolbarColor(e.target.value)}
+                    className="w-6 h-6 rounded cursor-pointer border border-gray-700 bg-transparent p-0"
+                    title="カスタム文字色"
+                  />
+                  {["#000000", "#ffffff", "#ff0000", "#0000ff", "#22c55e", "#f59e0b"].map((c) => (
+                    <button
+                      key={c}
+                      type="button"
+                      onClick={() => handleToolbarColor(c)}
+                      className={`w-4 h-4 rounded-full border transition-transform ${activeColor === c ? "ring-2 ring-orange-500 scale-110 border-white shadow-xs" : "border-gray-600 hover:scale-105"}`}
+                      style={{ backgroundColor: c }}
+                      title={`文字色: ${c}`}
+                    />
+                  ))}
+                </div>
+
+                {/* 座布団（背景色）設定 */}
+                <div className="flex items-center space-x-1 pl-1 border-l border-gray-800">
+                  <label className="flex items-center space-x-1 cursor-pointer bg-gray-800 px-2 py-0.5 rounded border border-gray-700 text-[11px] text-gray-300 hover:bg-gray-700 transition-colors">
+                    <input
+                      type="checkbox"
+                      checked={activeUseBg}
+                      onChange={(e) => handleToolbarUseBg(e.target.checked)}
+                      className="rounded text-orange-500 focus:ring-0 w-3 h-3"
+                    />
+                    <span>座布団</span>
+                  </label>
+                  {activeUseBg && (
+                    <div className="flex items-center space-x-1">
+                      <input
+                        type="color"
+                        value={activeBgColor}
+                        onChange={(e) => handleToolbarBgColor(e.target.value)}
+                        className="w-5 h-5 rounded cursor-pointer border border-gray-700 bg-transparent p-0"
+                        title="背景の色"
+                      />
+                      {["#ffffff", "#111827", "#fef08a", "#ffedd5"].map((bg) => (
+                        <button
+                          key={bg}
+                          type="button"
+                          onClick={() => handleToolbarBgColor(bg)}
+                          className={`w-3.5 h-3.5 rounded-full border transition-transform ${activeBgColor === bg ? "ring-2 ring-orange-500 scale-110 border-white shadow-xs" : "border-gray-600 hover:scale-105"}`}
+                          style={{ backgroundColor: bg }}
+                          title={`背景色: ${bg}`}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* 枠線設定（座布団の枠の有無・色設定） */}
+                {activeUseBg && (
+                  <div className="flex items-center space-x-1 pl-1 border-l border-gray-800">
+                    <label className="flex items-center space-x-1 cursor-pointer bg-gray-800 px-2 py-0.5 rounded border border-gray-700 text-[11px] text-gray-300 hover:bg-gray-700 transition-colors">
+                      <input
+                        type="checkbox"
+                        checked={activeShowBorder}
+                        onChange={(e) => handleToolbarShowBorder(e.target.checked)}
+                        className="rounded text-orange-500 focus:ring-0 w-3 h-3"
+                      />
+                      <span>枠線</span>
+                    </label>
+                    {activeShowBorder && (
+                      <div className="flex items-center space-x-1">
+                        <input
+                          type="color"
+                          value={activeBorderColor}
+                          onChange={(e) => handleToolbarBorderColor(e.target.value)}
+                          className="w-5 h-5 rounded cursor-pointer border border-gray-700 bg-transparent p-0"
+                          title="枠線の色"
+                        />
+                        {["#d1d5db", "#000000", "#ef4444", "#3b82f6"].map((bc) => (
+                          <button
+                            key={bc}
+                            type="button"
+                            onClick={() => handleToolbarBorderColor(bc)}
+                            className={`w-3.5 h-3.5 rounded-full border transition-transform ${activeBorderColor === bc ? "ring-2 ring-orange-500 scale-110 border-white shadow-xs" : "border-gray-600 hover:scale-105"}`}
+                            style={{ backgroundColor: bc }}
+                            title={`枠線色: ${bc}`}
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* 回転角度 */}
+                <div className="flex items-center space-x-1 pl-1 border-l border-gray-800">
+                  <button
+                    type="button"
+                    onClick={() => handleToolbarRotation((activeRotation - 15 + 360) % 360)}
+                    className="px-1.5 py-0.5 bg-gray-800 hover:bg-gray-700 rounded border border-gray-700 text-gray-300 text-[11px] transition-colors"
+                    title="左に15°回転"
+                  >
+                    ↺ -15°
+                  </button>
+                  <span className="text-[11px] font-mono text-orange-400 w-8 text-center">{activeRotation}°</span>
+                  <button
+                    type="button"
+                    onClick={() => handleToolbarRotation((activeRotation + 15) % 360)}
+                    className="px-1.5 py-0.5 bg-gray-800 hover:bg-gray-700 rounded border border-gray-700 text-gray-300 text-[11px] transition-colors"
+                    title="右に15°回転"
+                  >
+                    ↻ +15°
+                  </button>
+                  {activeRotation !== 0 && (
+                    <button
+                      type="button"
+                      onClick={() => handleToolbarRotation(0)}
+                      className="text-[10px] text-gray-400 hover:text-white px-1 underline"
+                      title="回転を0°に戻す"
+                    >
+                      リセット
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* 確定・キャンセルボタン */}
+              <div className="flex items-center space-x-2 shrink-0">
+                {editingTextState && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => setEditingTextState(null)}
+                      className="px-2.5 py-1 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded border border-gray-700 text-xs transition-colors"
+                    >
+                      キャンセル
+                    </button>
+                    <button
+                      type="button"
+                      onClick={submitText}
+                      className="px-3.5 py-1 bg-orange-600 hover:bg-orange-500 text-white rounded font-bold text-xs flex items-center gap-1 shadow-sm active:scale-95 transition-all"
+                    >
+                      <Check className="w-3.5 h-3.5" />
+                      <span>確定</span>
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
           <div
             ref={containerRef}
             className="w-full h-full overflow-auto p-6 sm:p-10 flex"
@@ -5155,304 +5797,39 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                   }`}
                 />
 
-                {/* テキスト挿入ターゲット位置マーカー（パネルを動かしても文字が入る位置がひと目で分かる） */}
-                {editingTextState && canvasRef.current && (
-                  <div
-                    className="absolute pointer-events-none z-20 flex items-center justify-center -translate-x-1/2 -translate-y-1/2"
-                    style={{
-                      left: `${(editingTextState.canvasX / canvasRef.current.width) * 100}%`,
-                      top: `${(editingTextState.canvasY / canvasRef.current.height) * 100}%`
-                    }}
-                  >
-                    <div className="w-6 h-6 rounded-full border-2 border-orange-500 bg-orange-500/25 animate-ping absolute" />
-                    <div className="w-3 h-3 rounded-full bg-orange-500 ring-2 ring-white shadow-lg relative" />
-                  </div>
-                )}
+                {/* キャンバス上の直接文字入力（枠線なし・点滅カーソルのみ・Canvasとピクセル完全一致） */}
+                {editingTextState && canvasRef.current && (() => {
+                  const curFontSize = editingTextState.fontSize || fontSize || 30;
+                  const curFontFamily = editingTextState.fontFamily || fontFamily || "sans";
+                  const curP = curFontSize * 0.25;
+                  const scaledFontSize = curFontSize * zoomScale;
+                  const hasBg = Boolean(editingTextState.useBg);
+                  const hasBorder = editingTextState.showBorder !== false;
+                  const bColor = editingTextState.borderColor || activeBorderColor || "#d1d5db";
 
-                {/* Inline Text Input Overlay (ドラッグ移動可能・画面直接入力・リアルタイムプレビュー＆文字数カウント) */}
-                {editingTextState && canvasRef.current && (
-                  <div
-                    className="absolute z-30 flex flex-col bg-gray-900/95 text-white border-2 border-orange-500 p-3 rounded-2xl shadow-2xl animate-fadeIn ring-4 ring-black/40 backdrop-blur-md"
-                    style={{
-                      left: `${(editingTextState.canvasX / canvasRef.current.width) * 100}%`,
-                      top: `${(editingTextState.canvasY / canvasRef.current.height) * 100}%`,
-                      minWidth: "320px",
-                      maxWidth: "92vw",
-                      transform: `translate(${textPanelOffset.x - 10}px, ${textPanelOffset.y - 10}px)`
-                    }}
-                    onClick={(e) => e.stopPropagation()}
-                    onMouseDown={(e) => e.stopPropagation()}
-                  >
-                    {/* つかんで移動できるフローティングヘッダーバー */}
+                  const leftPct = hasBg
+                    ? ((editingTextState.canvasX - curP) / canvasRef.current.width) * 100
+                    : (editingTextState.canvasX / canvasRef.current.width) * 100;
+                  const topPct = hasBg
+                    ? ((editingTextState.canvasY - curP) / canvasRef.current.height) * 100
+                    : ((editingTextState.canvasY + curP * 0.15) / canvasRef.current.height) * 100;
+
+                  return (
                     <div
-                      onMouseDown={handlePanelDragStart}
-                      onTouchStart={handlePanelDragStart}
-                      className="flex items-center justify-between bg-gray-800/95 hover:bg-gray-750 px-2.5 py-1.5 rounded-xl border border-gray-700/80 cursor-grab active:cursor-grabbing select-none transition-colors mb-2.5 group shadow-inner"
-                      title="ここをつかんで画面内を自由にドラッグ移動できます"
-                    >
-                      <div className="flex items-center gap-1.5 text-xs font-bold text-orange-400">
-                        <GripHorizontal className="w-4 h-4 text-orange-500 group-hover:scale-110 transition-transform" />
-                        <span className="text-[11px] font-semibold text-gray-200">
-                          {editingTextState.targetType === "callout"
-                            ? "吹き出しの文字編集"
-                            : editingTextState.targetType === "sticky"
-                              ? "付箋のメモ編集"
-                              : "ドラッグして移動"}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        {/* リアルタイム文字数カウンター */}
-                        <span className="text-[11px] font-mono font-bold bg-orange-600/30 text-orange-300 px-2 py-0.5 rounded-full border border-orange-500/40 shadow-xs">
-                          📝 {(editingTextState.text || "").length}文字
-                          {(editingTextState.text || "").includes("\n") && ` (${(editingTextState.text || "").split("\n").length}行)`}
-                        </span>
-                        {/* 位置リセットボタン（移動した時のみ表示） */}
-                        {(textPanelOffset.x !== 0 || textPanelOffset.y !== 0) && (
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setTextPanelOffset({ x: 0, y: 0 });
-                            }}
-                            title="元の位置に戻す"
-                            className="text-[10px] text-gray-300 hover:text-white px-2 py-0.5 bg-gray-700 hover:bg-gray-650 rounded border border-gray-600 transition-colors cursor-pointer"
-                          >
-                            位置リセット
-                          </button>
-                        )}
-                        {/* 閉じるボタン */}
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setEditingTextState(null);
-                          }}
-                          className="text-gray-400 hover:text-white p-1 rounded-md hover:bg-gray-700 transition-colors cursor-pointer"
-                          title="キャンセルして閉じる (Esc)"
-                        >
-                          <X className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* コントロールバー */}
-                    <div className="flex flex-col gap-2 mb-2 pb-2 border-b border-gray-750">
-                      <div className="flex items-center justify-between flex-wrap gap-2">
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-bold text-gray-300 flex items-center gap-1.5">
-                            <Edit3 className="w-3.5 h-3.5 text-orange-400" />
-                            {editingTextState.id ? "文字編集" : "直接入力"}
-                          </span>
-                        </div>
-
-                        {/* フォントサイズ調整 & 座布団トグル */}
-                        <div className="flex items-center space-x-2">
-                          <div className="flex items-center bg-gray-800 rounded-lg p-0.5 border border-gray-700">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                const newSize = Math.max(12, (editingTextState.fontSize || 40) - 4);
-                                setEditingTextState((prev) => ({ ...prev, fontSize: newSize }));
-                                setFontSize(newSize);
-                              }}
-                              title="文字サイズを小さく"
-                              className="px-1.5 py-0.5 text-xs text-gray-300 hover:text-white hover:bg-gray-700 rounded transition-colors font-bold"
-                            >
-                              -
-                            </button>
-                            <span className="text-[11px] text-gray-200 font-mono font-semibold px-1.5">
-                              {editingTextState.fontSize || 40}px
-                            </span>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                const newSize = Math.min(200, (editingTextState.fontSize || 40) + 4);
-                                setEditingTextState((prev) => ({ ...prev, fontSize: newSize }));
-                                setFontSize(newSize);
-                              }}
-                              title="文字サイズを大きく"
-                              className="px-1.5 py-0.5 text-xs text-gray-300 hover:text-white hover:bg-gray-700 rounded transition-colors font-bold"
-                            >
-                              +
-                            </button>
-                          </div>
-
-                          {editingTextState.targetType !== "callout" && editingTextState.targetType !== "sticky" && (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                const nextBg = !editingTextState.useBg;
-                                setEditingTextState((prev) => ({
-                                  ...prev,
-                                  useBg: nextBg
-                                }));
-                                setUseTextBg(nextBg);
-                              }}
-                              title="背景座布団の切り替え"
-                              className={`text-[11px] px-2.5 py-1 rounded-lg border transition-colors font-bold ${
-                                editingTextState.useBg
-                                  ? "bg-orange-600 border-orange-500 text-white shadow-sm"
-                                  : "bg-gray-800 border-gray-700 text-gray-400 hover:bg-gray-750"
-                              }`}
-                            >
-                              座布団
-                            </button>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* 書体（フォント）セレクター */}
-                      <div className="flex items-center gap-1.5 p-1.5 bg-gray-800/90 rounded-lg border border-gray-700/80 overflow-x-auto text-[11px]">
-                        <span className="text-gray-400 font-bold px-1 shrink-0">書体:</span>
-                        <div className="flex items-center gap-1 shrink-0 flex-wrap">
-                          {FONT_OPTIONS.map((f) => {
-                            const isSelected = (editingTextState.fontFamily || fontFamily || "sans") === f.id;
-                            return (
-                              <button
-                                key={f.id}
-                                type="button"
-                                onClick={() => {
-                                  setEditingTextState((prev) => ({ ...prev, fontFamily: f.id }));
-                                  setFontFamily(f.id);
-                                }}
-                                title={`${f.label} (${f.desc})`}
-                                className={`px-2 py-0.5 rounded text-[11px] font-bold transition-all cursor-pointer ${
-                                  isSelected
-                                    ? "bg-orange-600 text-white shadow-sm ring-1 ring-orange-400"
-                                    : "bg-gray-750 hover:bg-gray-700 text-gray-300 hover:text-white"
-                                }`}
-                                style={{ fontFamily: f.family }}
-                              >
-                                {f.name}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </div>
-
-                      {/* 座布団がONのときの追加オプション（枠線＆背景色＆スポイト） */}
-                      {editingTextState.targetType !== "callout" && editingTextState.targetType !== "sticky" && editingTextState.useBg && (
-                        <div className="flex items-center justify-between gap-2 p-1.5 bg-gray-800/90 rounded-lg border border-gray-700 animate-fadeIn text-[11px]">
-                          {/* 枠線あり/なし */}
-                          <div className="flex items-center gap-1">
-                            <span className="text-gray-400 font-medium">枠:</span>
-                            <div className="grid grid-cols-2 gap-0.5 bg-gray-900 p-0.5 rounded border border-gray-700">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setEditingTextState((prev) => ({
-                                    ...prev,
-                                    showBorder: true
-                                  }));
-                                  setTextShowBorder(true);
-                                }}
-                                className={`px-1.5 py-0.5 rounded text-[10px] font-bold transition-colors ${
-                                  editingTextState.showBorder !== false
-                                    ? "bg-orange-600 text-white"
-                                    : "text-gray-400 hover:text-gray-200"
-                                }`}
-                              >
-                                あり
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setEditingTextState((prev) => ({
-                                    ...prev,
-                                    showBorder: false
-                                  }));
-                                  setTextShowBorder(false);
-                                }}
-                                className={`px-1.5 py-0.5 rounded text-[10px] font-bold transition-colors ${
-                                  editingTextState.showBorder === false
-                                    ? "bg-orange-600 text-white"
-                                    : "text-gray-400 hover:text-gray-200"
-                                }`}
-                              >
-                                なし
-                              </button>
-                            </div>
-                          </div>
-
-                          {/* 背景色＆スポイト */}
-                          <div className="flex items-center gap-1">
-                            <span className="text-gray-400 font-medium">背景:</span>
-                            {/* スポイトボタン */}
-                            <button
-                              type="button"
-                              onClick={() =>
-                                pickColor((picked) => {
-                                  setEditingTextState((prev) => ({
-                                    ...prev,
-                                    bgColor: picked
-                                  }));
-                                  setTextBgColor(picked);
-                                })
-                              }
-                              title="スポイトで画面から色を取得"
-                              className="flex items-center gap-0.5 px-1.5 py-0.5 bg-gray-700 hover:bg-gray-600 text-orange-400 border border-gray-600 rounded text-[10px] font-bold transition-colors shadow-xs"
-                            >
-                              <Pipette className="w-3 h-3" />
-                              <span>スポイト</span>
-                            </button>
-
-                            {/* クイック色 */}
-                            {["#ffffff", "#fef3c7", "#f3f4f6", "#000000"].map((c) => (
-                              <button
-                                key={c}
-                                type="button"
-                                onClick={() => {
-                                  setEditingTextState((prev) => ({ ...prev, bgColor: c }));
-                                  setTextBgColor(c);
-                                }}
-                                className={`w-4 h-4 rounded-full border transition-transform ${
-                                  (editingTextState.bgColor || "#ffffff") === c
-                                    ? "scale-125 ring-2 ring-orange-500 border-white shadow-xs"
-                                    : "border-gray-500"
-                                }`}
-                                style={{ backgroundColor: c }}
-                              />
-                            ))}
-
-                            {/* カラーピッカー */}
-                            <label
-                              title="自由な色を選択"
-                              className="relative cursor-pointer w-4 h-4 rounded-full border border-gray-500 overflow-hidden flex items-center justify-center bg-gradient-to-tr from-red-500 via-green-500 to-blue-500"
-                            >
-                              <input
-                                type="color"
-                                value={editingTextState.bgColor || "#ffffff"}
-                                onChange={(e) => {
-                                  const c = e.target.value;
-                                  setEditingTextState((prev) => ({
-                                    ...prev,
-                                    bgColor: c
-                                  }));
-                                  setTextBgColor(c);
-                                }}
-                                className="opacity-0 absolute inset-0 w-full h-full cursor-pointer"
-                              />
-                            </label>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* 直接プレビューしながら入力できるテキストボックス */}
-                    <div
-                      className="rounded-xl overflow-hidden p-1 transition-all"
+                      className="absolute z-30"
                       style={{
-                        backgroundColor: editingTextState.useBg
-                          ? (editingTextState.bgColor || "#ffffff")
-                          : "#ffffff",
-                        border: editingTextState.useBg && editingTextState.showBorder !== false
-                          ? "2px solid #94a3b8"
-                          : "2px dashed #f97316"
+                        left: `${leftPct}%`,
+                        top: `${topPct}%`,
+                        transform: `rotate(${editingTextState.rotation || 0}deg)`,
+                        transformOrigin: "top left"
                       }}
+                      onClick={(e) => e.stopPropagation()}
+                      onMouseDown={(e) => e.stopPropagation()}
                     >
                       <textarea
                         ref={textInputRef}
-                        rows={Math.max(2, (editingTextState.text || "").split("\n").length)}
+                        autoFocus
+                        rows={Math.max(1, (editingTextState.text || "").split("\n").length)}
                         value={editingTextState.text}
                         onChange={(e) =>
                           setEditingTextState((prev) => ({
@@ -5461,70 +5838,43 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                           }))
                         }
                         onKeyDown={(e) => {
-                          if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+                          if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
                             e.preventDefault();
                             submitText();
-                          }
-                          if (e.key === "Escape") {
+                          } else if (e.key === "Escape") {
                             e.preventDefault();
                             setEditingTextState(null);
                           }
                         }}
-                        placeholder="ここに文字を直接入力... (Shift+Enterで改行)"
+                        placeholder="文字を入力..."
                         style={{
+                          fontSize: `${scaledFontSize}px`,
+                          lineHeight: 1.3,
+                          fontFamily: getFontCssFamily(curFontFamily),
+                          fontWeight: "bold",
                           color: editingTextState.color || "#000000",
-                          backgroundColor: "transparent",
-                          fontSize: `${Math.max(14, Math.min(48, Math.round((editingTextState.fontSize || 40) * Math.min(1.2, Math.max(0.5, zoomScale)))))}px`,
-                          lineHeight: "1.3",
-                          fontFamily: getFontCssFamily(editingTextState.fontFamily || fontFamily)
+                          caretColor: editingTextState.color || "#f97316",
+                          backgroundColor: hasBg ? (editingTextState.bgColor || "#ffffff") : "transparent",
+                          border: hasBg && hasBorder ? `1px solid ${bColor}` : "none",
+                          borderRadius: hasBg ? `${4 * zoomScale}px` : "0px",
+                          outline: "none",
+                          boxShadow: "none",
+                          padding: hasBg
+                            ? `${(curP + curP * 0.15) * zoomScale}px ${curP * zoomScale}px ${curP * zoomScale}px ${curP * zoomScale}px`
+                            : "0px",
+                          margin: "0px",
+                          minWidth: `${Math.max(scaledFontSize * 2, (editingTextState.text ? editingTextState.text.length * scaledFontSize * 0.9 : scaledFontSize * 2))}px`,
+                          minHeight: `${scaledFontSize * 1.3}px`,
+                          resize: "none",
+                          overflow: "visible",
+                          whiteSpace: "pre-wrap",
+                          wordBreak: "break-word"
                         }}
-                        className="w-full focus:outline-none resize-none font-bold leading-relaxed p-2 placeholder-gray-400"
+                        className="font-bold select-text focus:outline-none"
                       />
                     </div>
-
-                    {/* 下部ツールバー（文字色 & 確定/キャンセル & 自動確定ヒント） */}
-                    <div className="flex items-center justify-between mt-2.5 pt-2 border-t border-gray-750">
-                      <div className="flex items-center space-x-1.5">
-                        <span className="text-[10px] text-gray-400 mr-0.5">文字色:</span>
-                        {["#000000", "#ff0000", "#0000ff", "#22c55e", "#ffffff"].map((c) => (
-                          <button
-                            key={c}
-                            type="button"
-                            onClick={() => {
-                              setEditingTextState((prev) => ({ ...prev, color: c }));
-                              setColor(c);
-                            }}
-                            title={c === "#000000" ? "黒" : c === "#ff0000" ? "赤" : c === "#0000ff" ? "青" : c === "#22c55e" ? "緑" : "白"}
-                            className={`w-5 h-5 rounded-full border transition-all ${
-                              editingTextState.color === c
-                                ? "scale-125 ring-2 ring-orange-500 border-white shadow-sm"
-                                : "border-gray-500 hover:scale-110"
-                            }`}
-                            style={{ backgroundColor: c }}
-                          />
-                        ))}
-                      </div>
-
-                      <div className="flex items-center space-x-2">
-                        <button
-                          type="button"
-                          onClick={() => setEditingTextState(null)}
-                          className="px-2.5 py-1 bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs font-medium rounded-lg transition-colors border border-gray-700"
-                        >
-                          キャンセル
-                        </button>
-                        <button
-                          type="button"
-                          onClick={submitText}
-                          className="px-4 py-1 bg-orange-600 hover:bg-orange-500 text-white text-xs font-bold rounded-lg transition-all shadow-md shadow-orange-600/30 active:scale-95 flex items-center gap-1"
-                        >
-                          <Check className="w-3.5 h-3.5" />
-                          <span>確定 (Enter)</span>
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                )}
+                  );
+                })()}
               </div>
             </div>
           </div>
@@ -5594,6 +5944,9 @@ export default function App() {
     ]);
 
   const [files, setFiles] = useState([]);
+  const [rotatingFileIds, setRotatingFileIds] = useState(new Set());
+  const rotatingFileIdsRef = useRef(new Set());
+  const fileInputRef = useRef(null);
   const [isDragging, setIsDragging] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [canCancelProcessing, setCanCancelProcessing] = useState(false);
@@ -5602,6 +5955,7 @@ export default function App() {
   const [editingFile, setEditingFile] = useState(null);
   const [videoToExtract, setVideoToExtract] = useState(null);
   const [emailToExtract, setEmailToExtract] = useState(null);
+  const [isPdfCompareOpen, setIsPdfCompareOpen] = useState(false);
 
   // メール / winmail.dat から添付ファイルや本文を取り込んだ際のハンドラ
   const handleExtractFromEmail = async (selectedAttachments = [], extraFiles = []) => {
@@ -5678,6 +6032,10 @@ export default function App() {
   const [pdfPassword, setPdfPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [pdfBlockPrinting, setPdfBlockPrinting] = useState(false);
+  const [pdfAddPageNumber, setPdfAddPageNumber] = useState(false);
+  const [pdfPageNumberPos, setPdfPageNumberPos] = useState("bottom-center");
+  const [pdfPageNumberFormat, setPdfPageNumberFormat] = useState("page-total");
+  const [pdfStripMetadata, setPdfStripMetadata] = useState(true);
 
   // SNS・アスペクト比プリセット & 画像つぶれ防止フィット方式
   const [aspectRatioPreset, setAspectRatioPreset] = useState("none");
@@ -5785,9 +6143,13 @@ export default function App() {
     await processFiles(selectedFiles);
   };
 
-  // トップ画面の「やりたいこと」カードから、共通のファイル選択へ誘導する。
+  // トップ画面の「やりたいこと」カードや追加ボタンから、最速でファイル選択ダイアログを起動する。
   const openWorkspaceAction = () => {
-    document.getElementById("fileInput")?.click();
+    if (fileInputRef.current) {
+      fileInputRef.current.click();
+    } else {
+      document.getElementById("fileInput")?.click();
+    }
   };
 
   // [修正] バグチェック部指摘: 範囲逆順救済・最大ページ制限・0以下除外によるフリーズ防止
@@ -5982,49 +6344,49 @@ export default function App() {
 
   const rotateImage = async (id, direction) => {
     const file = files.find((f) => f.id === id);
-    if (!file) return;
+    if (!file || file.isUnsupported || rotatingFileIdsRef.current.has(id)) return;
 
+    rotatingFileIdsRef.current.add(id);
+    setRotatingFileIds(new Set(rotatingFileIdsRef.current));
     try {
       const angle = direction === "left" ? -90 : 90;
+      const rotateSource = async (src, type) => {
+        const img = await loadImageAsync(src);
+        const canvas = document.createElement("canvas");
+        canvas.width = img.height;
+        canvas.height = img.width;
+        const ctx = canvas.getContext("2d");
+        ctx.translate(canvas.width / 2, canvas.height / 2);
+        ctx.rotate((angle * Math.PI) / 180);
+        ctx.drawImage(img, -img.width / 2, -img.height / 2);
+        return canvas.toDataURL(type, Number(quality));
+      };
 
-      // [修正] バグチェック部指摘: 安全な画像ロード（破損時の永久ハングアップ防止）
-      const img = await loadImageAsync(file.originalSrc);
-
-      const canvas = document.createElement("canvas");
-      canvas.width = img.height;
-      canvas.height = img.width;
-
-      const ctx = canvas.getContext("2d");
-      ctx.translate(canvas.width / 2, canvas.height / 2);
-      ctx.rotate((angle * Math.PI) / 180);
-      ctx.drawImage(img, -img.width / 2, -img.height / 2);
-
-      const newOriginalSrc = canvas.toDataURL("image/png", 1.0);
-      addLog(`Rotating image: ${id}`);
-
-      const newDisplaySrc = await resizeImage(
-        newOriginalSrc,
-        maxWidth,
-        maxHeight,
-        quality,
-        targetFormat === "application/pdf" ? "image/jpeg" : targetFormat
-      );
+      // 元画像と出力画像をそれぞれ回転し、サイズ・形式・トリミングを維持する。
+      const newOriginalSrc = await rotateSource(file.originalSrc, "image/png");
+      const newDisplaySrc = file.src === file.originalSrc && file.type === "image/png"
+        ? newOriginalSrc
+        : await rotateSource(file.src, file.type);
 
       setFiles((prev) =>
         prev.map((f) =>
-          f.id === id
+          f.id === id && f.originalSrc === file.originalSrc && f.src === file.src
             ? {
                 ...f,
                 originalSrc: newOriginalSrc,
                 src: newDisplaySrc,
-                size: Math.round((newDisplaySrc.length * 3) / 4)
+                size: dataURLtoBlob(newDisplaySrc).size
               }
             : f
         )
       );
+      addLog(`Rotated ${file.name}: ${angle}°`);
     } catch (err) {
       console.error("Image rotation failed:", err);
-      alert("画像の回転に失敗しました。");
+      alert("ページ・画像の回転に失敗しました。もう一度お試しください。");
+    } finally {
+      rotatingFileIdsRef.current.delete(id);
+      setRotatingFileIds(new Set(rotatingFileIdsRef.current));
     }
   };
 
@@ -6333,8 +6695,63 @@ export default function App() {
           processedItems = items;
         } else if (file.type.startsWith("image/") || /\.(jpe?g|png|gif|webp|bmp|svg)$/i.test(file.name)) {
           setProcessStatus(`画像を処理中: ${file.name}`);
-          const item = await processImage(file);
-          processedItems = [item];
+          // 🚀 超高速プレビュー: 0.001秒で画面に表示させるためのObject URLを即座に生成
+          const instantUrl = URL.createObjectURL(file);
+          const ext = getExtFromFormat(targetFormat);
+          const baseWithoutExt = file.name.replace(/\.[^/.]+$/, "");
+          const targetName = `${baseWithoutExt}${ext}`;
+          const targetType = targetFormat === "application/pdf" ? "image/jpeg" : targetFormat;
+
+          const instantItem = {
+            id: generateId(),
+            name: targetName,
+            originalName: file.name,
+            originalSrc: instantUrl,
+            src: instantUrl,
+            type: targetType,
+            size: file.size,
+            originalSize: file.size,
+            isPdfPage: false,
+            rawFile: file,
+            isOptimizing: true
+          };
+
+          // 画面に即座に表示（体感0秒で作業スペースへ切り替え）
+          setFiles((prev) => [instantItem, ...prev]);
+
+          // バックグラウンドでBase64化とリサイズ・圧縮処理を非同期実行
+          (async () => {
+            try {
+              const fullItem = await processImage(file);
+              const resizedDataUrl = await resizeImage(
+                fullItem.originalSrc,
+                maxWidth,
+                maxHeight,
+                quality,
+                targetType
+              );
+              const newSize = Math.round((resizedDataUrl.length * 3) / 4);
+              setFiles((prev) =>
+                prev.map((f) =>
+                  f.id === instantItem.id
+                    ? {
+                        ...f,
+                        originalSrc: fullItem.originalSrc,
+                        src: resizedDataUrl,
+                        size: newSize,
+                        isOptimizing: false
+                      }
+                    : f
+                )
+              );
+              try { URL.revokeObjectURL(instantUrl); } catch (_) {}
+            } catch (err) {
+              console.warn("Background optimization error:", err);
+            }
+          })();
+
+          // instantItemは既にsetFilesしたため、ループ末尾のnewProcessedFilesには含めない
+          continue;
         } else {
           // 形式が分からないファイルも、ワークスペースには追加する。
           // ブラウザでの編集非対応であることを明示し、元ファイルは保持する。
@@ -6375,7 +6792,9 @@ export default function App() {
             targetFormat === "application/pdf" ? "image/jpeg" : targetFormat;
         }
 
-        newProcessedFiles.push(...processedItems);
+        if (processedItems.length > 0) {
+          setFiles((prev) => [...processedItems, ...prev]);
+        }
       } catch (error) {
         if (error instanceof ProcessingCancelledError) break;
         console.error("Processing Error:", error);
@@ -6383,7 +6802,6 @@ export default function App() {
       }
     }
 
-    setFiles((prev) => [...newProcessedFiles, ...prev]);
     setIsProcessing(false);
     setCanCancelProcessing(false);
     setIsCancelling(false);
@@ -6883,11 +7301,27 @@ export default function App() {
         ...encryptionOptions
       });
 
+      // メタデータの消去（匿名化オプション）
+      if (pdfStripMetadata) {
+        doc.setProperties({
+          title: "",
+          subject: "",
+          author: "",
+          keywords: "",
+          creator: "PDF Tool"
+        });
+      }
+
       doc.deletePage(1);
+
+      const validFiles = files.filter((f) => !f.isUnsupported);
+      const totalPages = validFiles.length;
+      let currentPageNum = 0;
 
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         if (file.isUnsupported) continue;
+        currentPageNum++;
         try {
           // [修正] バグチェック部指摘: 画像の安全なロード（onerror漏れによるフリーズ防止）
           const img = await loadImageAsync(file.src);
@@ -6897,6 +7331,50 @@ export default function App() {
           doc.addPage([width, height], width > height ? "l" : "p");
           let format = file.type === "image/png" ? "PNG" : "JPEG";
           doc.addImage(file.src, format, 0, 0, width, height);
+
+          // ページ番号の自動印字（視認性の高い白背景カプセル付き）
+          if (pdfAddPageNumber && totalPages > 0) {
+            let label = "";
+            if (pdfPageNumberFormat === "page-total") {
+              label = `${currentPageNum} / ${totalPages}`;
+            } else if (pdfPageNumberFormat === "hyphen") {
+              label = `- ${currentPageNum} -`;
+            } else {
+              label = `${currentPageNum}`;
+            }
+
+            const baseDim = Math.min(width, height);
+            const fontSize = Math.max(12, Math.min(26, Math.round(baseDim * 0.024)));
+            doc.setFontSize(fontSize);
+            doc.setFont("helvetica", "bold");
+
+            const marginX = Math.max(20, Math.round(width * 0.04));
+            const marginY = Math.max(20, Math.round(height * 0.035));
+
+            let posX = width / 2;
+            let align = "center";
+            if (pdfPageNumberPos === "bottom-right") {
+              posX = width - marginX;
+              align = "right";
+            }
+
+            const posY = height - marginY;
+
+            // 背景カプセル（文字が写真や下地に紛れないよう半透明白座布団を描画）
+            const textWidth = doc.getTextWidth(label);
+            const padX = fontSize * 0.5;
+            const padY = fontSize * 0.35;
+            const badgeW = textWidth + padX * 2;
+            const badgeH = fontSize + padY * 2;
+            const badgeX = align === "center" ? posX - badgeW / 2 : posX - badgeW + padX;
+            const badgeY = posY - fontSize + padY * 0.2;
+
+            doc.setFillColor(255, 255, 255);
+            doc.roundedRect(badgeX, badgeY, badgeW, badgeH, 4, 4, "F");
+
+            doc.setTextColor(40, 40, 40);
+            doc.text(label, posX, posY, { align });
+          }
         } catch (imgErr) {
           console.error(`画像「${file.name}」の読み込みに失敗しました:`, imgErr);
         }
@@ -6964,6 +7442,16 @@ export default function App() {
               <FileType className="w-3.5 h-3.5" />
               <span>PNG / JPG / PDF / HEIC / Word / Excel / 動画(MP4/MOV)</span>
             </div>
+
+            <button
+              type="button"
+              onClick={() => setIsPdfCompareOpen(true)}
+              className="flex items-center space-x-1.5 bg-orange-700/90 hover:bg-orange-800 text-white px-3 py-1.5 rounded-lg text-xs font-bold transition-all border border-orange-400/40 shadow-xs"
+              title="新旧2つのPDFの変更点・修正箇所を比較"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+              <span>PDF差分比較</span>
+            </button>
             {files.length > 0 && (
               <div className="flex space-x-2">
                 {targetFormat === "application/pdf" ? (
@@ -7002,129 +7490,178 @@ export default function App() {
         </div>
       </header>
 
+      {/* グローバル常駐ファイル入力（全画面で最速応答・OSファイルダイアログ即時起動） */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        id="fileInput"
+        className="hidden"
+        multiple
+        accept="image/*,application/pdf,.heic,.docx,.xlsx,.xls,.mp4,.mov,.webm,.avi,.dat,.eml,.msg"
+        onChange={handleFileSelect}
+      />
+
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
-        {/* Workspace guide: 初めての人でも目的から機能を選べる入口 */}
-        <section className="overflow-hidden rounded-3xl border border-orange-200 bg-gradient-to-br from-white via-orange-50 to-amber-100/70 shadow-sm">
-          <div className="px-6 py-7 sm:px-8 sm:py-8">
-            <div className="max-w-3xl">
-              <p className="text-xs font-extrabold tracking-[0.18em] text-orange-600">MEDIA WORKSPACE</p>
-              <h2 className="mt-2 text-2xl font-extrabold tracking-tight text-orange-950 sm:text-3xl">
-                ファイルを入れるだけで、作業をはじめられる。
-              </h2>
-              <p className="mt-2 text-sm leading-relaxed text-gray-600 sm:text-base">
-                PDFか画像か分からなくても大丈夫。複数のファイルをまとめて追加すると、形式ごとにできる作業をご案内します。
+        {/* Workspace guide: 初めての人でも目的から機能を選べる入口（ファイル未選択時のみ大きく表示） */}
+        {files.length === 0 ? (
+          <section className="overflow-hidden rounded-3xl border border-orange-200 bg-gradient-to-br from-white via-orange-50 to-amber-100/70 shadow-sm animate-fadeIn">
+            <div className="px-6 py-7 sm:px-8 sm:py-8">
+              <div className="max-w-3xl">
+                <p className="text-xs font-extrabold tracking-[0.18em] text-orange-600">MEDIA WORKSPACE</p>
+                <h2 className="mt-2 text-2xl font-extrabold tracking-tight text-orange-950 sm:text-3xl">
+                  ファイルを入れるだけで、作業をはじめられる。
+                </h2>
+                <p className="mt-2 text-sm leading-relaxed text-gray-600 sm:text-base">
+                  PDFか画像か分からなくても大丈夫。複数のファイルをまとめて追加すると、形式ごとにできる作業をご案内します。
+                </p>
+              </div>
+
+              <div
+                role="button"
+                tabIndex={0}
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop}
+                onClick={openWorkspaceAction}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    openWorkspaceAction();
+                  }
+                }}
+                className={`group mt-6 flex w-full cursor-pointer items-center gap-4 rounded-2xl border-2 border-dashed px-5 py-5 text-left shadow-sm transition-all focus:outline-none focus:ring-2 focus:ring-orange-500 focus:ring-offset-2 sm:px-6 ${
+                  isDragging ? "border-orange-500 bg-orange-100" : "border-orange-300 bg-white hover:border-orange-500 hover:bg-orange-50"
+                }`}
+              >
+                <span className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-orange-600 text-white shadow-md transition-transform group-hover:scale-105">
+                  <UploadCloud className="h-7 w-7" />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-base font-extrabold text-orange-950 sm:text-lg">ファイルをまとめて入れる</span>
+                  <span className="mt-1 block text-xs leading-relaxed text-stone-600 sm:text-sm">形式は分からなくてOK。画像・動画・PDF・Word・Excel・メール添付（winmail.dat等）などを、複数まとめて選択またはドロップできます。</span>
+                </span>
+                <span className="hidden shrink-0 items-center gap-1 rounded-xl bg-orange-500 px-4 py-2.5 text-sm font-bold text-white shadow-sm transition-colors group-hover:bg-orange-600 sm:inline-flex">
+                  ファイルを選ぶ <ArrowRight className="h-4 w-4" />
+                </span>
+              </div>
+              <p className="mt-2 flex items-center gap-1.5 text-xs text-orange-700/80">
+                <ClipboardPaste className="h-3.5 w-3.5" />
+                スクリーンショットは、画面上で Cmd+V（Ctrl+V）でも追加できます。
               </p>
-            </div>
 
-            <div
-              role="button"
-              tabIndex={0}
-              onDragOver={handleDragOver}
-              onDragLeave={handleDragLeave}
-              onDrop={handleDrop}
-              onClick={openWorkspaceAction}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" || event.key === " ") {
-                  event.preventDefault();
-                  openWorkspaceAction();
-                }
-              }}
-              className={`group mt-6 flex w-full cursor-pointer items-center gap-4 rounded-2xl border-2 border-dashed px-5 py-5 text-left shadow-sm transition-all focus:outline-none focus:ring-2 focus:ring-orange-500 focus:ring-offset-2 sm:px-6 ${
-                isDragging ? "border-orange-500 bg-orange-100" : "border-orange-300 bg-white hover:border-orange-500 hover:bg-orange-50"
-              }`}
-            >
-              <input
-                type="file"
-                id="fileInput"
-                className="hidden"
-                multiple
-                accept="*/*"
-                onChange={handleFileSelect}
-              />
-              <span className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-orange-600 text-white shadow-md transition-transform group-hover:scale-105">
-                <UploadCloud className="h-7 w-7" />
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="block text-base font-extrabold text-orange-950 sm:text-lg">ファイルをまとめて入れる</span>
-                <span className="mt-1 block text-xs leading-relaxed text-stone-600 sm:text-sm">形式は分からなくてOK。画像・動画・PDF・Word・Excel・メール添付（winmail.dat等）などを、複数まとめて選択またはドロップできます。</span>
-              </span>
-              <span className="hidden shrink-0 items-center gap-1 rounded-xl bg-orange-500 px-4 py-2.5 text-sm font-bold text-white shadow-sm transition-colors group-hover:bg-orange-600 sm:inline-flex">
-                ファイルを選ぶ <ArrowRight className="h-4 w-4" />
-              </span>
-            </div>
-            <p className="mt-2 flex items-center gap-1.5 text-xs text-orange-700/80">
-              <ClipboardPaste className="h-3.5 w-3.5" />
-              スクリーンショットは、画面上で Cmd+V（Ctrl+V）でも追加できます。
-            </p>
+              <div className="mt-8 flex items-center gap-3">
+                <div className="h-px flex-1 bg-orange-200" />
+                <p className="text-xs font-bold text-orange-800">目的が決まっている方はこちら</p>
+                <div className="h-px flex-1 bg-orange-200" />
+              </div>
 
-            <div className="mt-8 flex items-center gap-3">
-              <div className="h-px flex-1 bg-orange-200" />
-              <p className="text-xs font-bold text-orange-800">目的が決まっている方はこちら</p>
-              <div className="h-px flex-1 bg-orange-200" />
+              <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+                {[
+                  {
+                    title: "2つのPDFを比較",
+                    description: "新旧PDFの変更箇所（文字・図面）を赤と青で自動検出します。",
+                    action: "比較ツールを開く",
+                    onClick: () => setIsPdfCompareOpen(true),
+                    icon: Sparkles,
+                    tone: "bg-indigo-50 text-indigo-700 border-indigo-200",
+                    buttonTone: "bg-indigo-600 hover:bg-indigo-700 focus:ring-indigo-400"
+                  },
+                  {
+                    title: "動画を扱う",
+                    description: "必要なシーンを切り出し、静止画として保存できます。",
+                    action: "動画を選ぶ",
+                    icon: Video,
+                    tone: "bg-rose-50 text-rose-600 border-rose-200",
+                    buttonTone: "bg-rose-400 hover:bg-rose-500 focus:ring-rose-300"
+                  },
+                  {
+                    title: "画像を整える",
+                    description: "リサイズ・圧縮・形式変換・トリミングができます。",
+                    action: "画像を選ぶ",
+                    icon: Crop,
+                    tone: "bg-orange-50 text-orange-600 border-orange-200",
+                    buttonTone: "bg-orange-400 hover:bg-orange-500 focus:ring-orange-300"
+                  },
+                  {
+                    title: "PDFに書き込む",
+                    description: "PDFを開いた後、各ページの「編集」から文字や図形を追加できます。",
+                    action: "PDFを選ぶ",
+                    icon: Edit3,
+                    tone: "bg-amber-50 text-amber-700 border-amber-200",
+                    buttonTone: "bg-amber-400 hover:bg-amber-500 focus:ring-amber-300"
+                  },
+                  {
+                    title: "PDFを隠す・まとめる",
+                    description: "「編集」で黒塗り・モザイク。並べ替えて「PDFで保存」で結合できます。",
+                    action: "PDFを選ぶ",
+                    icon: ShieldCheck,
+                    tone: "bg-emerald-50 text-emerald-700 border-emerald-200",
+                    buttonTone: "bg-emerald-500 hover:bg-emerald-600 focus:ring-emerald-300"
+                  },
+                  {
+                    title: "書類を変換する",
+                    description: "Word・Excel・PDFを読み込み、画像やPDFとして整えられます。",
+                    action: "ファイルを選ぶ",
+                    icon: FileText,
+                    tone: "bg-sky-50 text-sky-700 border-sky-200",
+                    buttonTone: "bg-sky-500 hover:bg-sky-600 focus:ring-sky-300"
+                  }
+                ].map(({ title, description, action, onClick, icon: Icon, tone, buttonTone }) => (
+                  <article key={title} className="group flex min-h-52 flex-col rounded-2xl border border-orange-100 bg-white/90 p-4 shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md">
+                    <div className={`flex h-10 w-10 items-center justify-center rounded-xl border ${tone}`}>
+                      <Icon className="h-5 w-5" />
+                    </div>
+                    <h3 className="mt-4 font-bold text-orange-950">{title}</h3>
+                    <p className="mt-1.5 flex-1 text-xs leading-relaxed text-stone-600">{description}</p>
+                    <button
+                      type="button"
+                      onClick={onClick || openWorkspaceAction}
+                      className={`mt-4 inline-flex items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-xs font-bold text-white shadow-sm transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 ${buttonTone}`}
+                    >
+                      {action}
+                      <ArrowRight className="h-3.5 w-3.5" />
+                    </button>
+                  </article>
+                ))}
+              </div>
             </div>
-
-            <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-              {[
-                {
-                  title: "動画を扱う",
-                  description: "必要なシーンを切り出し、静止画として保存できます。",
-                  action: "動画を選ぶ",
-                  icon: Video,
-                  tone: "bg-rose-50 text-rose-600 border-rose-200",
-                  buttonTone: "bg-rose-400 hover:bg-rose-500 focus:ring-rose-300"
-                },
-                {
-                  title: "画像を整える",
-                  description: "リサイズ・圧縮・形式変換・トリミングができます。",
-                  action: "画像を選ぶ",
-                  icon: Crop,
-                  tone: "bg-orange-50 text-orange-600 border-orange-200",
-                  buttonTone: "bg-orange-400 hover:bg-orange-500 focus:ring-orange-300"
-                },
-                {
-                  title: "PDFに書き込む",
-                  description: "PDFを開いた後、各ページの「編集」から文字や図形を追加できます。",
-                  action: "PDFを選ぶ",
-                  icon: Edit3,
-                  tone: "bg-amber-50 text-amber-700 border-amber-200",
-                  buttonTone: "bg-amber-400 hover:bg-amber-500 focus:ring-amber-300"
-                },
-                {
-                  title: "PDFを隠す・まとめる",
-                  description: "「編集」で黒塗り・モザイク。並べ替えて「PDFで保存」で結合できます。",
-                  action: "PDFを選ぶ",
-                  icon: ShieldCheck,
-                  tone: "bg-emerald-50 text-emerald-700 border-emerald-200",
-                  buttonTone: "bg-emerald-500 hover:bg-emerald-600 focus:ring-emerald-300"
-                },
-                {
-                  title: "書類を変換する",
-                  description: "Word・Excel・PDFを読み込み、画像やPDFとして整えられます。",
-                  action: "ファイルを選ぶ",
-                  icon: FileText,
-                  tone: "bg-sky-50 text-sky-700 border-sky-200",
-                  buttonTone: "bg-sky-500 hover:bg-sky-600 focus:ring-sky-300"
-                }
-              ].map(({ title, description, action, icon: Icon, tone, buttonTone }) => (
-                <article key={title} className="group flex min-h-52 flex-col rounded-2xl border border-orange-100 bg-white/90 p-4 shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md">
-                  <div className={`flex h-10 w-10 items-center justify-center rounded-xl border ${tone}`}>
-                    <Icon className="h-5 w-5" />
-                  </div>
-                  <h3 className="mt-4 font-bold text-orange-950">{title}</h3>
-                  <p className="mt-1.5 flex-1 text-xs leading-relaxed text-stone-600">{description}</p>
-                  <button
-                    type="button"
-                    onClick={openWorkspaceAction}
-                    className={`mt-4 inline-flex items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-xs font-bold text-white shadow-sm transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 ${buttonTone}`}
-                  >
-                    {action}
-                    <ArrowRight className="h-3.5 w-3.5" />
-                  </button>
-                </article>
-              ))}
+          </section>
+        ) : (
+          /* 取り込み済み時：最上部に表示されるコンパクトな追加ドロップゾーン */
+          <div
+            role="button"
+            tabIndex={0}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+            onClick={openWorkspaceAction}
+            className={`flex flex-wrap items-center justify-between gap-4 p-4 rounded-2xl border-2 border-dashed transition-all cursor-pointer shadow-xs animate-fadeIn ${
+              isDragging ? "border-orange-500 bg-orange-100" : "border-orange-300/80 bg-orange-50/70 hover:bg-orange-100/70 hover:border-orange-400"
+            }`}
+          >
+            <div className="flex items-center gap-3">
+              <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-orange-600 text-white shadow-sm shrink-0">
+                <UploadCloud className="h-5 w-5" />
+              </span>
+              <div>
+                <p className="text-sm font-extrabold text-orange-950">
+                  ファイルをさらに追加・ドロップできます
+                </p>
+                <p className="text-xs text-orange-700/80">
+                  画像・動画・PDF・Office文書（Cmd+Vでスクリーンショット貼り付けも可能）
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 rounded-xl bg-orange-500 hover:bg-orange-600 px-3.5 py-2 text-xs font-bold text-white shadow-sm transition-colors"
+              >
+                ＋ ファイルを追加
+              </button>
             </div>
           </div>
-        </section>
+        )}
 
         {/* Settings Bar (スマート＆スリム設計) */}
         <div className="p-4 sm:p-5 rounded-2xl glass-panel shadow-sm space-y-4 border border-orange-200/80">
@@ -7259,48 +7796,118 @@ export default function App() {
             </div>
           </div>
 
-          {/* PDF Password Setting */}
+          {/* PDF Password & Advanced Settings */}
           {targetFormat === "application/pdf" && (
-            <div className="pt-2 border-t border-orange-200/50 flex flex-wrap items-center gap-4 animate-fadeIn">
-              <div className="flex items-center space-x-2">
-                <label className="text-xs font-bold text-orange-900 shrink-0">
-                  PDF出力パスワード:
-                </label>
-                <div className="relative w-64">
+            <div className="pt-3 border-t border-orange-200/50 space-y-3 animate-fadeIn">
+              {/* パスワード保護 & 印刷制限 */}
+              <div className="flex flex-wrap items-center gap-4">
+                <div className="flex items-center space-x-2">
+                  <label className="text-xs font-bold text-orange-900 shrink-0">
+                    PDF出力パスワード:
+                  </label>
+                  <div className="relative w-64">
+                    <input
+                      type={showPassword ? "text" : "password"}
+                      placeholder="保護用パスワードを入力"
+                      value={pdfPassword}
+                      onChange={(e) => setPdfPassword(e.target.value)}
+                      className="w-full bg-white border border-orange-200 text-gray-800 text-xs rounded-lg focus:ring-orange-500 focus:border-orange-500 block p-2 pr-8 shadow-sm font-mono"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword(!showPassword)}
+                      className="absolute inset-y-0 right-0 pr-2 flex items-center text-orange-400 hover:text-orange-600"
+                    >
+                      {showPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="flex items-center space-x-2">
                   <input
-                    type={showPassword ? "text" : "password"}
-                    placeholder="保護用パスワードを入力"
-                    value={pdfPassword}
-                    onChange={(e) => setPdfPassword(e.target.value)}
-                    className="w-full bg-white border border-orange-200 text-gray-800 text-xs rounded-lg focus:ring-orange-500 focus:border-orange-500 block p-2 pr-8 shadow-sm font-mono"
+                    type="checkbox"
+                    id="blockPrint"
+                    disabled={!pdfPassword.trim()}
+                    checked={pdfPassword.trim() ? pdfBlockPrinting : false}
+                    onChange={(e) => setPdfBlockPrinting(e.target.checked)}
+                    className="w-4 h-4 text-orange-600 bg-white border-orange-200 rounded focus:ring-orange-500 disabled:opacity-50"
                   />
-                  <button
-                    type="button"
-                    onClick={() => setShowPassword(!showPassword)}
-                    className="absolute inset-y-0 right-0 pr-2 flex items-center text-orange-400 hover:text-orange-600"
+                  <label
+                    htmlFor="blockPrint"
+                    className={`text-xs font-medium cursor-pointer ${
+                      pdfPassword.trim() ? "text-orange-950" : "text-gray-400"
+                    }`}
                   >
-                    {showPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                  </button>
+                    印刷を禁止する
+                  </label>
                 </div>
               </div>
 
-              <div className="flex items-center space-x-2">
-                <input
-                  type="checkbox"
-                  id="blockPrint"
-                  disabled={!pdfPassword.trim()}
-                  checked={pdfPassword.trim() ? pdfBlockPrinting : false}
-                  onChange={(e) => setPdfBlockPrinting(e.target.checked)}
-                  className="w-4 h-4 text-orange-600 bg-white border-orange-200 rounded focus:ring-orange-500 disabled:opacity-50"
-                />
-                <label
-                  htmlFor="blockPrint"
-                  className={`text-xs font-medium cursor-pointer ${
-                    pdfPassword.trim() ? "text-orange-950" : "text-gray-400"
-                  }`}
-                >
-                  印刷を禁止する
-                </label>
+              {/* ページ番号（ノンブル） & メタデータ削除（匿名化） */}
+              <div className="flex flex-wrap items-center gap-x-6 gap-y-2 pt-2 border-t border-orange-100">
+                {/* ページ番号チェック */}
+                <div className="flex items-center space-x-2">
+                  <input
+                    type="checkbox"
+                    id="addPageNum"
+                    checked={pdfAddPageNumber}
+                    onChange={(e) => setPdfAddPageNumber(e.target.checked)}
+                    className="w-4 h-4 text-orange-600 bg-white border-orange-200 rounded focus:ring-orange-500 cursor-pointer"
+                  />
+                  <label
+                    htmlFor="addPageNum"
+                    className="text-xs font-bold text-orange-950 cursor-pointer flex items-center gap-1 select-none"
+                  >
+                    <span>🔢 ページ番号を印字</span>
+                  </label>
+                </div>
+
+                {pdfAddPageNumber && (
+                  <div className="flex items-center gap-3 bg-white/90 px-2.5 py-1 rounded-lg border border-orange-200 shadow-xs animate-fadeIn">
+                    <div className="flex items-center space-x-1">
+                      <span className="text-[11px] text-stone-600 font-medium">位置:</span>
+                      <select
+                        value={pdfPageNumberPos}
+                        onChange={(e) => setPdfPageNumberPos(e.target.value)}
+                        className="bg-orange-50 border border-orange-200 text-stone-800 text-[11px] font-semibold rounded px-1.5 py-0.5 focus:ring-orange-500"
+                      >
+                        <option value="bottom-center">中央下</option>
+                        <option value="bottom-right">右下</option>
+                      </select>
+                    </div>
+
+                    <div className="flex items-center space-x-1">
+                      <span className="text-[11px] text-stone-600 font-medium">形式:</span>
+                      <select
+                        value={pdfPageNumberFormat}
+                        onChange={(e) => setPdfPageNumberFormat(e.target.value)}
+                        className="bg-orange-50 border border-orange-200 text-stone-800 text-[11px] font-semibold rounded px-1.5 py-0.5 focus:ring-orange-500"
+                      >
+                        <option value="page-total">1 / 5 （総ページ付き）</option>
+                        <option value="hyphen">- 1 - （ハイフン）</option>
+                        <option value="simple">1 （番号のみ）</option>
+                      </select>
+                    </div>
+                  </div>
+                )}
+
+                {/* メタデータ消去チェック */}
+                <div className="flex items-center space-x-2 sm:ml-auto">
+                  <input
+                    type="checkbox"
+                    id="stripMeta"
+                    checked={pdfStripMetadata}
+                    onChange={(e) => setPdfStripMetadata(e.target.checked)}
+                    className="w-4 h-4 text-orange-600 bg-white border-orange-200 rounded focus:ring-orange-500 cursor-pointer"
+                  />
+                  <label
+                    htmlFor="stripMeta"
+                    className="text-xs font-medium text-stone-700 cursor-pointer flex items-center gap-1 select-none"
+                    title="作成者名・PC情報・使用ソフト情報をPDFから消去して保存します"
+                  >
+                    <span>🛡️ メタデータを削除（匿名化）</span>
+                  </label>
+                </div>
               </div>
             </div>
           )}
@@ -7450,7 +8057,7 @@ export default function App() {
 
             <p className="text-sm text-orange-700 bg-orange-100/70 border border-orange-200 rounded-lg px-3 py-2">
               <GripVertical className="inline w-4 h-4 mr-1 -mt-0.5" />
-              ハンドルをドラッグして順番を変更できます。スマホでは長押しして移動してください。
+              各ページの「左90°・右90°」で向きを変更できます。回転は保存にも反映されます。ハンドルをドラッグして並び替えできます。
             </p>
 
             <DndContext
@@ -7541,24 +8148,6 @@ export default function App() {
                       </button>
                     </div>
 
-                    {/* Rotation Controls */}
-                    {!file.isUnsupported && <div className="absolute top-2 left-2 flex space-x-1 opacity-0 group-hover:opacity-100 transition-opacity z-10">
-                      <button
-                        onClick={() => rotateImage(file.id, "left")}
-                        className="p-1.5 bg-white/90 text-gray-600 rounded-full shadow-sm hover:bg-orange-500 hover:text-white transition-all border border-gray-200"
-                        title="左回転"
-                      >
-                        <RotateCcw className="w-3 h-3" />
-                      </button>
-                      <button
-                        onClick={() => rotateImage(file.id, "right")}
-                        className="p-1.5 bg-white/90 text-gray-600 rounded-full shadow-sm hover:bg-orange-500 hover:text-white transition-all border border-gray-200"
-                        title="右回転"
-                      >
-                        <RotateCw className="w-3 h-3" />
-                      </button>
-                    </div>}
-
                     {/* Badge */}
                     <div className="absolute top-2 right-2 flex flex-col items-end gap-1 z-10">
                       <span className="bg-gray-900 text-white text-xs font-bold min-w-8 h-8 px-2 rounded-full shadow flex items-center justify-center">
@@ -7642,6 +8231,35 @@ export default function App() {
 
                   {/* Info Area with Input */}
                   <div className="p-3 bg-white flex flex-col justify-between flex-grow">
+                    {!file.isUnsupported && (
+                      <div className="mb-3 flex items-center gap-2 border-b border-orange-100 pb-3" aria-busy={rotatingFileIds.has(file.id)}>
+                        <span className="mr-auto text-xs font-semibold text-orange-800">
+                          {rotatingFileIds.has(file.id) ? "回転中…" : file.isPdfPage ? "ページ回転" : "画像回転"}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => rotateImage(file.id, "left")}
+                          disabled={rotatingFileIds.has(file.id) || isProcessing}
+                          className="flex min-h-10 items-center gap-1 rounded-lg border border-orange-200 bg-orange-50 px-2.5 text-xs font-semibold text-orange-800 transition-colors hover:bg-orange-100 focus-visible:outline-2 focus-visible:outline-orange-500 disabled:cursor-wait disabled:opacity-50"
+                          aria-label={`${index + 1}番目を左に90度回転`}
+                          title="左に90度回転（保存にも反映）"
+                        >
+                          <RotateCcw className="h-4 w-4" />
+                          左90°
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => rotateImage(file.id, "right")}
+                          disabled={rotatingFileIds.has(file.id) || isProcessing}
+                          className="flex min-h-10 items-center gap-1 rounded-lg border border-orange-200 bg-orange-50 px-2.5 text-xs font-semibold text-orange-800 transition-colors hover:bg-orange-100 focus-visible:outline-2 focus-visible:outline-orange-500 disabled:cursor-wait disabled:opacity-50"
+                          aria-label={`${index + 1}番目を右に90度回転`}
+                          title="右に90度回転（保存にも反映）"
+                        >
+                          <RotateCw className="h-4 w-4" />
+                          右90°
+                        </button>
+                      </div>
+                    )}
                     {file.renderWarning && (
                       <div
                         className="mb-3 flex flex-col gap-2 rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-2 text-xs leading-relaxed text-amber-800"
@@ -7752,7 +8370,7 @@ export default function App() {
               <div className="w-8 h-8 bg-orange-100 rounded-full flex items-center justify-center mx-auto mb-2 text-orange-600">
                 <RotateCw className="w-4 h-4" />
               </div>
-              <h4 className="text-xs font-bold text-gray-600">画像回転</h4>
+              <h4 className="text-xs font-bold text-gray-600">PDF・画像の回転</h4>
               <p className="text-[10px] text-gray-500">スキャン時の向き補正</p>
             </div>
             <div className="text-center p-4">
@@ -7799,6 +8417,13 @@ export default function App() {
           onClose={() => setEmailToExtract(null)}
         />
       )}
+
+      {/* PDF Diff Compare Modal (完全ローカル処理) */}
+      <PdfCompareModal
+        isOpen={isPdfCompareOpen}
+        onClose={() => setIsPdfCompareOpen(false)}
+        pdfjsOptions={PDFJS_DOCUMENT_OPTIONS}
+      />
     </div>
   );
 }
