@@ -177,6 +177,8 @@ export const PdfCompareModal = ({ isOpen, onClose, pdfjsOptions }) => {
         let wNew = 0, hNew = 0;
         let oldDataUrl = null;
         let newDataUrl = null;
+        let alignedOldUrl = null;
+        let alignedNewUrl = null;
 
         // 1. 旧ページのレンダリング (整数ピクセル & 背景白)
         if (docOld && currentPage <= docOld.numPages) {
@@ -333,16 +335,22 @@ export const PdfCompareModal = ({ isOpen, onClose, pdfjsOptions }) => {
           }
 
           diffCtx.putImageData(diffId, 0, 0);
+
+          // 自動ズレ補正＆拡大補正を適用した状態の画像をスライダー・左右比較用にも使用
+          alignedOldUrl = c1.toDataURL("image/png");
+          alignedNewUrl = c2.toDataURL("image/png");
         } else if (canvasNew && !canvasOld) {
           diffCtx.fillStyle = "#ffffff";
           diffCtx.fillRect(0, 0, maxW, maxH);
           diffCtx.drawImage(canvasNew, 0, 0);
+          alignedNewUrl = diffCanvas.toDataURL("image/png");
           diffCount = 100;
           totalContent = 100;
         } else if (canvasOld && !canvasNew) {
           diffCtx.fillStyle = "#ffffff";
           diffCtx.fillRect(0, 0, maxW, maxH);
           diffCtx.drawImage(canvasOld, 0, 0);
+          alignedOldUrl = diffCanvas.toDataURL("image/png");
           diffCount = 100;
           totalContent = 100;
         }
@@ -353,8 +361,8 @@ export const PdfCompareModal = ({ isOpen, onClose, pdfjsOptions }) => {
 
         if (!isCancelled) {
           setPageData({
-            oldUrl: oldDataUrl,
-            newUrl: newDataUrl,
+            oldUrl: alignedOldUrl,
+            newUrl: alignedNewUrl,
             diffUrl,
             width: maxW,
             height: maxH,
@@ -852,34 +860,31 @@ export const PdfCompareModal = ({ isOpen, onClose, pdfjsOptions }) => {
                 <div
                   ref={sliderContainerRef}
                   onPointerDown={handlePointerDown}
-                  className="relative bg-white shadow-2xl rounded-xl overflow-hidden border border-stone-700 cursor-ew-resize select-none flex items-center justify-center"
+                  className="relative bg-white shadow-2xl rounded-xl overflow-hidden border border-stone-700 cursor-ew-resize select-none inline-flex items-center justify-center max-h-[calc(100vh-170px)] max-w-full"
                 >
+                  {/* ベース画像（変更後 / 新バージョン） */}
                   <img
                     src={pageData.newUrl}
                     alt="新バージョン"
-                    className="block object-contain max-h-[calc(100vh-170px)] max-w-full pointer-events-none"
+                    className="block object-contain max-h-[calc(100vh-170px)] max-w-full pointer-events-none select-none"
                   />
 
-                  <div
-                    className="absolute inset-0 overflow-hidden"
-                    style={{ width: `${sliderPos}%` }}
-                  >
-                    <img
-                      src={pageData.oldUrl}
-                      alt="旧バージョン"
-                      className="block object-contain max-h-[calc(100vh-170px)] max-w-none pointer-events-none"
-                      style={{
-                        width: sliderContainerRef.current?.clientWidth || "100%",
-                        height: sliderContainerRef.current?.clientHeight || "100%"
-                      }}
-                    />
-                  </div>
+                  {/* 重ね合わせ画像（変更前 / 旧バージョン）: clip-path で左側 sliderPos% 分だけを表示 */}
+                  <img
+                    src={pageData.oldUrl}
+                    alt="旧バージョン"
+                    className="absolute inset-0 w-full h-full object-contain pointer-events-none select-none"
+                    style={{
+                      clipPath: `polygon(0% 0%, ${sliderPos}% 0%, ${sliderPos}% 100%, 0% 100%)`
+                    }}
+                  />
 
+                  {/* スライダーの境界仕切り線 */}
                   <div
-                    className="absolute top-0 bottom-0 w-1 bg-white shadow-2xl pointer-events-none z-10"
+                    className="absolute top-0 bottom-0 w-0.5 bg-white shadow-[0_0_8px_rgba(0,0,0,0.6)] pointer-events-none z-10"
                     style={{ left: `${sliderPos}%` }}
                   >
-                    <div className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-8 h-8 rounded-full bg-orange-600 text-white flex items-center justify-center shadow-lg border-2 border-white text-[11px] font-bold">
+                    <div className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-8 h-8 rounded-full bg-orange-600 text-white flex items-center justify-center shadow-xl border-2 border-white text-[11px] font-bold">
                       ↔
                     </div>
                   </div>
