@@ -175,8 +175,6 @@ export const PdfCompareModal = ({ isOpen, onClose, pdfjsOptions }) => {
         let canvasNew = null;
         let wOld = 0, hOld = 0;
         let wNew = 0, hNew = 0;
-        let oldDataUrl = null;
-        let newDataUrl = null;
         let alignedOldUrl = null;
         let alignedNewUrl = null;
 
@@ -194,7 +192,6 @@ export const PdfCompareModal = ({ isOpen, onClose, pdfjsOptions }) => {
           ctxOld.fillRect(0, 0, wOld, hOld);
           await page.render({ canvasContext: ctxOld, viewport }).promise;
           if (isCancelled) return;
-          oldDataUrl = canvasOld.toDataURL("image/png");
         }
 
         // 2. 新ページのレンダリング (整数ピクセル & 背景白)
@@ -211,7 +208,6 @@ export const PdfCompareModal = ({ isOpen, onClose, pdfjsOptions }) => {
           ctxNew.fillRect(0, 0, wNew, hNew);
           await page.render({ canvasContext: ctxNew, viewport }).promise;
           if (isCancelled) return;
-          newDataUrl = canvasNew.toDataURL("image/png");
         }
 
         const maxW = Math.max(wOld, wNew) || 1200;

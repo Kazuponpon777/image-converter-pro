@@ -1443,11 +1443,20 @@ const ImageEditor = ({ file, onSave, onClose }) => {
   const [zoomScale, setZoomScale] = useState(1);
   const [isFitMode, setIsFitMode] = useState(true);
   const [isSpacePressed, setIsSpacePressed] = useState(false);
+  const [imgDims, setImgDims] = useState({ width: 0, height: 0 });
+  const [hoverCursor, setHoverCursor] = useState("default");
   const isPanningRef = useRef(false);
   const panStartRef = useRef({ x: 0, y: 0, scrollLeft: 0, scrollTop: 0 });
 
-  // Elements & History
-  const [elements, setElements] = useState([]);
+  // Elements & History (再編集時には前回保存した要素リストを復元)
+  const [elements, setElements] = useState(() =>
+    Array.isArray(file.savedElements)
+      ? file.savedElements.map((el) => ({
+          ...el,
+          points: el.points ? el.points.map((p) => ({ ...p })) : undefined
+        }))
+      : []
+  );
   const [selectedId, setSelectedId] = useState(null);
   const [history, setHistory] = useState([]);
 
@@ -1584,6 +1593,51 @@ const ImageEditor = ({ file, onSave, onClose }) => {
           cleanCtx.textAlign = "center";
           cleanCtx.textBaseline = "middle";
           cleanCtx.fillText(el.text, 0, 0);
+        } else if (el.stampType === "circle_name") {
+          const r = el.size * 0.5;
+          cleanCtx.lineWidth = Math.max(2, r * 0.06);
+          cleanCtx.beginPath();
+          cleanCtx.arc(0, 0, r, 0, Math.PI * 2);
+          cleanCtx.stroke();
+          const txt = el.text || "";
+          cleanCtx.textAlign = "center";
+          cleanCtx.textBaseline = "middle";
+          if (txt.length === 1) {
+            cleanCtx.font = `bold ${r * 1.2}px "MS Mincho", "Noto Serif JP", serif`;
+            cleanCtx.fillText(txt, 0, 0);
+          } else if (txt.length === 2) {
+            cleanCtx.font = `bold ${r * 0.9}px "MS Mincho", "Noto Serif JP", serif`;
+            cleanCtx.fillText(txt[0], 0, -r * 0.35);
+            cleanCtx.fillText(txt[1], 0, r * 0.35);
+          } else if (txt.length === 3) {
+            cleanCtx.font = `bold ${r * 0.6}px "MS Mincho", "Noto Serif JP", serif`;
+            cleanCtx.fillText(txt[0], 0, -r * 0.5);
+            cleanCtx.fillText(txt[1], 0, 0);
+            cleanCtx.fillText(txt[2], 0, r * 0.5);
+          } else {
+            cleanCtx.font = `bold ${r * 0.5}px "MS Mincho", "Noto Serif JP", serif`;
+            cleanCtx.fillText(txt.slice(0, 2), 0, -r * 0.3);
+            cleanCtx.fillText(txt.slice(2), 0, r * 0.3);
+          }
+        } else if (el.stampType === "square_name") {
+          const w = el.size;
+          cleanCtx.lineWidth = Math.max(3, w * 0.05);
+          cleanCtx.strokeRect(-w / 2, -w / 2, w, w);
+          const txt = el.text || "";
+          cleanCtx.textAlign = "center";
+          cleanCtx.textBaseline = "middle";
+          if (txt.length <= 4) {
+            cleanCtx.font = `bold ${w * 0.32}px "MS Mincho", "Noto Serif JP", serif`;
+            const t1 = txt.substring(0, 2);
+            const t2 = txt.substring(2);
+            cleanCtx.fillText(t1, w * 0.2, -w * 0.2);
+            cleanCtx.fillText(t2, -w * 0.2, w * 0.2);
+          } else {
+            cleanCtx.font = `bold ${w * 0.25}px "MS Mincho", "Noto Serif JP", serif`;
+            const mid = Math.ceil(txt.length / 2);
+            cleanCtx.fillText(txt.slice(0, mid), w * 0.22, 0);
+            cleanCtx.fillText(txt.slice(mid), -w * 0.22, 0);
+          }
         }
         cleanCtx.restore();
       }
@@ -1706,10 +1760,11 @@ const ImageEditor = ({ file, onSave, onClose }) => {
     imgRef.current = newCroppedImg;
     canvas.width = targetW;
     canvas.height = targetH;
+    setImgDims({ width: targetW, height: targetH });
     setElements([]); // クロップ適用後はベース画像に統合し要素リセット
     setSelectedId(null);
     setTool("select");
-    redrawCanvas();
+    drawAll();
     alert("✨ 指定アスペクト比での配置・切り抜きを適用しました！");
   };
 
@@ -1919,10 +1974,11 @@ const ImageEditor = ({ file, onSave, onClose }) => {
   // Initialize background image
   useEffect(() => {
     const img = new Image();
-    img.src = file.originalSrc;
+    img.src = file.baseOriginalSrc || file.originalSrc;
     img.onload = () => {
       imgRef.current = img;
       isLoaded.current = true;
+      setImgDims({ width: img.naturalWidth, height: img.naturalHeight });
       const canvas = canvasRef.current;
       if (canvas) {
         canvas.width = img.naturalWidth;
@@ -2801,8 +2857,8 @@ const ImageEditor = ({ file, onSave, onClose }) => {
             (yMax - yMin) + padding * 2
           );
 
-          // 四角形・楕円・吹き出し・付箋の四隅にドラッグ変形ハンドルを描画
-          if (el.type === "rect" || el.type === "ellipse" || el.type === "callout" || el.type === "sticky") {
+          // 四角形・楕円・吹き出し・付箋・モザイク・黒塗りの四隅にドラッグ変形ハンドルを描画
+          if (el.type === "rect" || el.type === "ellipse" || el.type === "callout" || el.type === "sticky" || el.type === "mosaic" || el.type === "mask") {
             const hSize = Math.max(8, Math.min(14, canvas.width * 0.006));
             ctx.fillStyle = "#ffffff";
             ctx.strokeStyle = "#2563eb";
@@ -3156,7 +3212,7 @@ const ImageEditor = ({ file, onSave, onClose }) => {
       }
     }
 
-    if (el.type === "rect" || el.type === "ellipse" || el.type === "callout" || el.type === "sticky") {
+    if (el.type === "rect" || el.type === "ellipse" || el.type === "callout" || el.type === "sticky" || el.type === "mosaic" || el.type === "mask") {
       const xMin = Math.min(el.x, el.x + el.w) - padding;
       const xMax = Math.max(el.x, el.x + el.w) + padding;
       const yMin = Math.min(el.y, el.y + el.h) - padding;
@@ -3243,14 +3299,21 @@ const ImageEditor = ({ file, onSave, onClose }) => {
       const hit = detectHitElement(pos);
       if (hit) {
         setSelectedId(hit.id);
-        // 既存テキスト選択時にもスタイル（サイズ・色・座布団）をキープ
+        // 既存要素の選択時に左パネルのスタイル設定も同期
+        if (hit.color) setColor(hit.color);
+        if (hit.brushSize) setBrushSize(hit.brushSize);
+        if (hit.dashStyle) setLineDashStyle(hit.dashStyle);
+        if (hit.fillMode && (hit.type === "rect" || hit.type === "circle" || hit.type === "ellipse")) {
+          setShapeStyle(hit.fillMode);
+        }
+        if (hit.mosaicSize) setMosaicSize(hit.mosaicSize);
         if (hit.type === "text" && hit.fontSize) {
           setFontSize(hit.fontSize);
-          if (hit.color) setColor(hit.color);
           if (hit.useBg !== undefined) setUseTextBg(hit.useBg);
           if (hit.bgColor) setTextBgColor(hit.bgColor);
           if (hit.showBorder !== undefined) setTextShowBorder(hit.showBorder);
         }
+        pushHistory(elements);
         isDraggingElement.current = true;
         dragStartPos.current = pos;
         if (hit.type === "brush") {
@@ -3390,7 +3453,33 @@ const ImageEditor = ({ file, onSave, onClose }) => {
       return;
     }
 
-    if (!isMouseDown.current) return;
+    if (!isMouseDown.current) {
+      if (tool === "select") {
+        const hoverPos = getCanvasCoords(clientX, clientY);
+        if (selectedId) {
+          const curEl = elements.find((e) => e.id === selectedId);
+          const handle = getResizeHandleAtPos(hoverPos, curEl);
+          if (handle === "se" || handle === "nw") {
+            setHoverCursor("nwse-resize");
+            return;
+          } else if (handle === "ne" || handle === "sw") {
+            setHoverCursor("nesw-resize");
+            return;
+          } else if (handle === "r") {
+            setHoverCursor("ew-resize");
+            return;
+          } else if (handle === "tail") {
+            setHoverCursor("pointer");
+            return;
+          }
+        }
+        const hitHover = detectHitElement(hoverPos);
+        setHoverCursor(hitHover ? "move" : "default");
+      } else if (hoverCursor !== "default") {
+        setHoverCursor("default");
+      }
+      return;
+    }
     const pos = getCanvasCoords(clientX, clientY);
 
     if (tool === "crop" && isDraggingCrop.current) {
@@ -3422,7 +3511,7 @@ const ImageEditor = ({ file, onSave, onClose }) => {
               tailY: Math.round(pos.y)
             };
           }
-          if (el.type === "rect" || el.type === "ellipse" || el.type === "callout" || el.type === "sticky") {
+          if (el.type === "rect" || el.type === "ellipse" || el.type === "callout" || el.type === "sticky" || el.type === "mosaic" || el.type === "mask") {
             let newX = origX;
             let newY = origY;
             let newW = origW;
@@ -3448,9 +3537,45 @@ const ImageEditor = ({ file, onSave, onClose }) => {
             return { ...el, x: newX, y: newY, w: newW, h: newH };
           } else if (el.type === "arrow" || el.type === "line" || el.type === "double_line") {
             if (handle === "se") {
-              return { ...el, w: origW + dx, h: origH + dy };
+              let nextW = origW + dx;
+              let nextH = origH + dy;
+              if (shiftKey) {
+                const absX = Math.abs(nextW);
+                const absY = Math.abs(nextH);
+                if (absY < absX * 0.414) nextH = 0;
+                else if (absX < absY * 0.414) nextW = 0;
+                else {
+                  const d = Math.max(absX, absY);
+                  nextW = Math.sign(nextW) * d;
+                  nextH = Math.sign(nextH) * d;
+                }
+              }
+              return { ...el, w: nextW, h: nextH };
             } else if (handle === "nw") {
-              return { ...el, x: origX + dx, y: origY + dy, w: origW - dx, h: origH - dy };
+              const endX = origX + origW;
+              const endY = origY + origH;
+              let nextX = origX + dx;
+              let nextY = origY + dy;
+              let nextW = endX - nextX;
+              let nextH = endY - nextY;
+              if (shiftKey) {
+                const absX = Math.abs(nextW);
+                const absY = Math.abs(nextH);
+                if (absY < absX * 0.414) {
+                  nextH = 0;
+                  nextY = endY;
+                } else if (absX < absY * 0.414) {
+                  nextW = 0;
+                  nextX = endX;
+                } else {
+                  const d = Math.max(absX, absY);
+                  nextW = Math.sign(nextW) * d;
+                  nextH = Math.sign(nextH) * d;
+                  nextX = endX - nextW;
+                  nextY = endY - nextH;
+                }
+              }
+              return { ...el, x: nextX, y: nextY, w: nextW, h: nextH };
             }
           } else if (el.type === "circle" && handle === "r") {
             return { ...el, r: Math.max(5, origR + dx) };
@@ -3578,14 +3703,14 @@ const ImageEditor = ({ file, onSave, onClose }) => {
               };
             } else if (el.type === "sticky") {
               return { ...el, w: 140, h: 140 };
-            } else if (el.type === "rect") {
+            } else if (el.type === "rect" || el.type === "mosaic" || el.type === "mask") {
               return { ...el, w: 140, h: 90 };
             } else if (el.type === "ellipse") {
               return { ...el, w: 140, h: 90 };
             }
           }
-          // rect, ellipse, callout, sticky の正規化（負の幅高さを解消して操作しやすくする）
-          if (["rect", "ellipse", "callout", "sticky"].includes(el.type)) {
+          // rect, ellipse, callout, sticky, mosaic, mask の正規化（負の幅高さを解消して操作しやすくする）
+          if (["rect", "ellipse", "callout", "sticky", "mosaic", "mask"].includes(el.type)) {
             const minX = Math.min(el.x, el.x + el.w);
             const minY = Math.min(el.y, el.y + el.h);
             const w = Math.abs(el.w);
@@ -3620,9 +3745,22 @@ const ImageEditor = ({ file, onSave, onClose }) => {
     activeShapeId.current = null;
   };
 
+  // キャンバス外でマウスボタンを離した場合も確実にドラッグ終了させるグローバルリスナー
+  useEffect(() => {
+    const handleGlobalMouseUp = () => {
+      if (isMouseDown.current || isPanningRef.current) {
+        handleEnd();
+      }
+    };
+    window.addEventListener("mouseup", handleGlobalMouseUp);
+    return () => window.removeEventListener("mouseup", handleGlobalMouseUp);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // クロップ設定やツール変更時にリアルタイムで枠線を再描画
   useEffect(() => {
     drawAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     tool,
     cropPreset,
@@ -3635,7 +3773,8 @@ const ImageEditor = ({ file, onSave, onClose }) => {
     cropZoom,
     cropFitMode,
     elements,
-    selectedId
+    selectedId,
+    editingTextState
   ]);
 
   // Double Click handler -> Trigger inline text re-editing
@@ -3797,6 +3936,16 @@ const ImageEditor = ({ file, onSave, onClose }) => {
         id: generateId(),
         points: target.points.map((p) => ({ x: p.x + offset, y: p.y + offset }))
       };
+    } else if (target.type === "callout") {
+      const currentTail = getCalloutTailPos(target);
+      duplicated = {
+        ...target,
+        id: generateId(),
+        x: (target.x || 0) + offset,
+        y: (target.y || 0) + offset,
+        tailX: currentTail.x + offset,
+        tailY: currentTail.y + offset
+      };
     } else {
       duplicated = {
         ...target,
@@ -3920,17 +4069,240 @@ const ImageEditor = ({ file, onSave, onClose }) => {
 
   const handleSave = () => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (!canvas || !imgRef.current) return;
+
+    // 1. もし文字入力中（未確定状態）で直接「確定して保存」を押した場合も、入力中の文字を破棄せず反映する
+    let finalElements = [...elements];
+    if (editingTextState) {
+      const trimmed = (editingTextState.text || "").trim();
+      if (!trimmed && editingTextState.targetType !== "callout" && editingTextState.targetType !== "sticky") {
+        if (editingTextState.id) {
+          finalElements = finalElements.filter((el) => el.id !== editingTextState.id);
+        }
+      } else if (editingTextState.id) {
+        finalElements = finalElements.map((el) => {
+          if (el.id !== editingTextState.id) return el;
+          if (el.type === "callout" || el.type === "sticky") {
+            return {
+              ...el,
+              text: editingTextState.text,
+              fontSize: editingTextState.fontSize || el.fontSize,
+              color: editingTextState.color || el.color,
+              fontFamily: editingTextState.fontFamily || el.fontFamily || (el.type === "sticky" ? "hand" : fontFamily)
+            };
+          }
+          return {
+            ...el,
+            text: editingTextState.text,
+            fontSize: editingTextState.fontSize,
+            color: editingTextState.color,
+            useBg: editingTextState.useBg,
+            bgColor: editingTextState.bgColor || "#ffffff",
+            showBorder: editingTextState.showBorder !== false,
+            borderColor: editingTextState.borderColor || el.borderColor || textBorderColor,
+            fontFamily: editingTextState.fontFamily || el.fontFamily || fontFamily,
+            rotation: editingTextState.rotation !== undefined ? editingTextState.rotation : (el.rotation || 0)
+          };
+        });
+      } else {
+        finalElements.push({
+          id: generateId(),
+          type: "text",
+          text: editingTextState.text,
+          x: editingTextState.canvasX,
+          y: editingTextState.canvasY,
+          fontSize: editingTextState.fontSize,
+          color: editingTextState.color,
+          useBg: editingTextState.useBg,
+          bgColor: editingTextState.bgColor || "#ffffff",
+          showBorder: editingTextState.showBorder !== false,
+          borderColor: editingTextState.borderColor || textBorderColor,
+          fontFamily: editingTextState.fontFamily || fontFamily,
+          rotation: editingTextState.rotation || 0
+        });
+      }
+    }
 
     setSelectedId(null);
     setEditingTextState(null);
 
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        const dataUrl = canvas.toDataURL("image/png", 1.0);
-        onSave(dataUrl);
-      });
+    // 2. 選択枠（青点線）やクロップ枠オーバーレイを含まないクリーンな状態でキャンバスに同期描画して出力
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(imgRef.current, 0, 0);
+
+    finalElements.forEach((el) => {
+      ctx.save();
+      if (el.type === "brush") {
+        if (el.points && el.points.length >= 2) {
+          ctx.beginPath();
+          ctx.moveTo(el.points[0].x, el.points[0].y);
+          for (let i = 1; i < el.points.length; i++) {
+            ctx.lineTo(el.points[i].x, el.points[i].y);
+          }
+          ctx.strokeStyle = el.color;
+          ctx.lineWidth = el.brushSize;
+          ctx.lineCap = "round";
+          ctx.lineJoin = "round";
+          ctx.stroke();
+        }
+      } else if (el.type === "rect") {
+        if (el.fillMode === "stroke") {
+          ctx.strokeStyle = el.color;
+          ctx.lineWidth = el.brushSize || 5;
+          ctx.strokeRect(el.x, el.y, el.w, el.h);
+        } else {
+          ctx.fillStyle = el.color;
+          ctx.fillRect(el.x, el.y, el.w, el.h);
+        }
+      } else if (el.type === "circle") {
+        ctx.beginPath();
+        ctx.arc(el.x, el.y, el.r, 0, Math.PI * 2);
+        if (el.fillMode === "stroke") {
+          ctx.strokeStyle = el.color;
+          ctx.lineWidth = el.brushSize || 5;
+          ctx.stroke();
+        } else {
+          ctx.fillStyle = el.color;
+          ctx.fill();
+        }
+      } else if (el.type === "ellipse") {
+        const cx = el.x + el.w / 2;
+        const cy = el.y + el.h / 2;
+        const rx = Math.abs(el.w / 2);
+        const ry = Math.abs(el.h / 2);
+        if (rx > 0 && ry > 0) {
+          ctx.beginPath();
+          ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+          if (el.fillMode === "stroke") {
+            ctx.strokeStyle = el.color;
+            ctx.lineWidth = el.brushSize || 5;
+            ctx.stroke();
+          } else {
+            ctx.fillStyle = el.color;
+            ctx.fill();
+          }
+        }
+      } else if (el.type === "text") {
+        drawTextElement(ctx, el);
+      } else if (el.type === "arrow") {
+        drawArrowElement(ctx, el);
+      } else if (el.type === "line") {
+        drawLineElement(ctx, el);
+      } else if (el.type === "double_line") {
+        drawDoubleLineElement(ctx, el);
+      } else if (el.type === "callout") {
+        drawCalloutElement(ctx, el);
+      } else if (el.type === "sticky") {
+        drawStickyElement(ctx, el);
+      } else if (el.type === "stamp") {
+        ctx.save();
+        ctx.translate(el.x, el.y);
+        ctx.strokeStyle = el.color;
+        ctx.fillStyle = el.color;
+        if (el.stampType === "approved" || el.stampType === "confidential" || el.stampType === "urgent") {
+          const w = el.size * 1.5;
+          const h = el.size * 0.7;
+          ctx.lineWidth = Math.max(3, w * 0.05);
+          ctx.beginPath();
+          if (ctx.roundRect) ctx.roundRect(-w / 2, -h / 2, w, h, w * 0.1);
+          else ctx.rect(-w / 2, -h / 2, w, h);
+          ctx.stroke();
+          ctx.font = `bold ${h * 0.6}px "Meiryo", "MS Gothic", sans-serif`;
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText(el.text, 0, 0);
+        } else if (el.stampType === "done") {
+          const r = el.size * 0.45;
+          ctx.lineWidth = Math.max(3, r * 0.08);
+          ctx.beginPath();
+          ctx.arc(0, 0, r, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.font = `bold ${r * 1.1}px "Meiryo", "MS Gothic", sans-serif`;
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText(el.text, 0, 0);
+        } else if (el.stampType === "circle_name") {
+          const r = el.size * 0.5;
+          ctx.lineWidth = Math.max(2, r * 0.06);
+          ctx.beginPath();
+          ctx.arc(0, 0, r, 0, Math.PI * 2);
+          ctx.stroke();
+          const txt = el.text || "";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          if (txt.length === 1) {
+            ctx.font = `bold ${r * 1.2}px "MS Mincho", "Noto Serif JP", serif`;
+            ctx.fillText(txt, 0, 0);
+          } else if (txt.length === 2) {
+            ctx.font = `bold ${r * 0.9}px "MS Mincho", "Noto Serif JP", serif`;
+            ctx.fillText(txt[0], 0, -r * 0.35);
+            ctx.fillText(txt[1], 0, r * 0.35);
+          } else if (txt.length === 3) {
+            ctx.font = `bold ${r * 0.6}px "MS Mincho", "Noto Serif JP", serif`;
+            ctx.fillText(txt[0], 0, -r * 0.5);
+            ctx.fillText(txt[1], 0, 0);
+            ctx.fillText(txt[2], 0, r * 0.5);
+          } else {
+            ctx.font = `bold ${r * 0.5}px "MS Mincho", "Noto Serif JP", serif`;
+            ctx.fillText(txt.slice(0, 2), 0, -r * 0.3);
+            ctx.fillText(txt.slice(2), 0, r * 0.3);
+          }
+        } else if (el.stampType === "square_name") {
+          const w = el.size;
+          ctx.lineWidth = Math.max(3, w * 0.05);
+          ctx.strokeRect(-w / 2, -w / 2, w, w);
+          const txt = el.text || "";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          if (txt.length <= 4) {
+            ctx.font = `bold ${w * 0.32}px "MS Mincho", "Noto Serif JP", serif`;
+            const t1 = txt.substring(0, 2);
+            const t2 = txt.substring(2);
+            ctx.fillText(t1, w * 0.2, -w * 0.2);
+            ctx.fillText(t2, -w * 0.2, w * 0.2);
+          } else {
+            ctx.font = `bold ${w * 0.25}px "MS Mincho", "Noto Serif JP", serif`;
+            const mid = Math.ceil(txt.length / 2);
+            ctx.fillText(txt.slice(0, mid), w * 0.22, 0);
+            ctx.fillText(txt.slice(mid), -w * 0.22, 0);
+          }
+        }
+        ctx.restore();
+      } else if (el.type === "mosaic") {
+        const xMin = Math.min(el.x, el.x + el.w);
+        const yMin = Math.min(el.y, el.y + el.h);
+        const w = Math.abs(el.w);
+        const h = Math.abs(el.h);
+        if (w >= 2 && h >= 2) {
+          const mSize = Math.max(4, el.mosaicSize || 16);
+          const sampleW = Math.max(1, Math.floor(w / mSize));
+          const sampleH = Math.max(1, Math.floor(h / mSize));
+          const offCanvas = document.createElement("canvas");
+          offCanvas.width = sampleW;
+          offCanvas.height = sampleH;
+          const offCtx = offCanvas.getContext("2d");
+          if (offCtx) {
+            offCtx.drawImage(imgRef.current, xMin, yMin, w, h, 0, 0, sampleW, sampleH);
+            ctx.save();
+            ctx.imageSmoothingEnabled = false;
+            ctx.drawImage(offCanvas, 0, 0, sampleW, sampleH, xMin, yMin, w, h);
+            ctx.restore();
+          }
+        }
+      } else if (el.type === "mask") {
+        const xMin = Math.min(el.x, el.x + el.w);
+        const yMin = Math.min(el.y, el.y + el.h);
+        const w = Math.abs(el.w);
+        const h = Math.abs(el.h);
+        ctx.fillStyle = "#000000";
+        ctx.fillRect(xMin, yMin, w, h);
+      }
+      ctx.restore();
     });
+
+    const dataUrl = canvas.toDataURL("image/png", 1.0);
+    onSave(dataUrl, imgRef.current.src, finalElements);
   };
 
   return (
@@ -3943,7 +4315,7 @@ const ImageEditor = ({ file, onSave, onClose }) => {
             {file.name} を編集
           </span>
           <span className="hidden md:inline-block text-xs bg-gray-800 text-gray-400 px-2.5 py-1 rounded-full border border-gray-700">
-            {imgRef.current ? `${imgRef.current.naturalWidth} × ${imgRef.current.naturalHeight} px` : ""}
+            {imgDims.width > 0 ? `${imgDims.width} × ${imgDims.height} px` : ""}
           </span>
         </div>
 
@@ -5364,10 +5736,77 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                   </div>
                 </div>
               )}
+
+              {/* Mosaic specific inspector */}
+              {selectedElement.type === "mosaic" && (
+                <div className="space-y-2.5">
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-xs">
+                      <span className="text-gray-300">モザイクの粗さ</span>
+                      <span className="text-blue-400 font-bold">{selectedElement.mosaicSize || 16}px</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="6"
+                      max="40"
+                      value={selectedElement.mosaicSize || 16}
+                      onChange={(e) => updateSelectedElement({ mosaicSize: parseInt(e.target.value) })}
+                      className="w-full h-1.5 bg-gray-750 rounded-lg appearance-none cursor-pointer"
+                    />
+                  </div>
+                  <p className="text-[11px] text-blue-200/80">
+                    💡 四隅の白い四角（ハンドル）をドラッグして範囲を拡大・縮小できます。
+                  </p>
+                </div>
+              )}
+
+              {/* Mask specific inspector */}
+              {selectedElement.type === "mask" && (
+                <div className="space-y-2">
+                  <p className="text-[11px] text-blue-200/80">
+                    💡 四隅の白い四角（ハンドル）をドラッグして黒塗り範囲を微調整できます。
+                  </p>
+                </div>
+              )}
+
+              {/* Brush specific inspector */}
+              {selectedElement.type === "brush" && (
+                <div className="space-y-2.5">
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-xs">
+                      <span className="text-gray-300">ペンの太さ</span>
+                      <span className="text-blue-400 font-bold">{selectedElement.brushSize || 6}px</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="1"
+                      max="60"
+                      value={selectedElement.brushSize || 6}
+                      onChange={(e) => updateSelectedElement({ brushSize: parseInt(e.target.value) })}
+                      className="w-full h-1.5 bg-gray-750 rounded-lg appearance-none cursor-pointer"
+                    />
+                  </div>
+                  <div className="flex items-center justify-between pt-1">
+                    <span className="text-xs text-gray-300">色</span>
+                    <div className="flex items-center gap-1">
+                      {["#000000", "#ffffff", "#ff0000", "#0000ff", "#22c55e"].map((c) => (
+                        <button
+                          key={c}
+                          onClick={() => updateSelectedElement({ color: c })}
+                          className={`w-5 h-5 rounded-full border transition-transform ${
+                            selectedElement.color === c ? "scale-125 ring-2 ring-blue-400" : "border-gray-600"
+                          }`}
+                          style={{ backgroundColor: c }}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
-          {/* Color Palette (Default for new elements) */}
+          {/* Color Palette (Default for new elements + updates selected element) */}
           <div className="space-y-2">
             <label className="text-xs font-bold uppercase tracking-wider text-gray-400">
               基本カラー
@@ -5382,7 +5821,16 @@ const ImageEditor = ({ file, onSave, onClose }) => {
               ].map((c) => (
                 <button
                   key={c.hex}
-                  onClick={() => setColor(c.hex)}
+                  onClick={() => {
+                    setColor(c.hex);
+                    if (tool === "select" && selectedId && selectedElement) {
+                      if (selectedElement.type === "callout") {
+                        updateSelectedElement({ color: c.hex, borderColor: c.hex });
+                      } else if (selectedElement.type !== "mosaic" && selectedElement.type !== "mask") {
+                        updateSelectedElement({ color: c.hex });
+                      }
+                    }
+                  }}
                   title={c.name}
                   className={`w-7 h-7 rounded-full border-2 transition-transform shadow-sm ${
                     color === c.hex ? "scale-125 border-orange-500 ring-2 ring-orange-500/50" : "border-gray-700 hover:scale-105"
@@ -5749,6 +6197,28 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                   className="w-full h-1.5 bg-gray-750 rounded-lg appearance-none cursor-pointer"
                 />
               </div>
+
+              <div className="flex items-center justify-between pt-1">
+                <span className="text-xs text-gray-400">スタンプ色</span>
+                <div className="flex items-center gap-1.5">
+                  {[
+                    { hex: "#ff0000", label: "朱色・赤" },
+                    { hex: "#000000", label: "黒" },
+                    { hex: "#2563eb", label: "青" }
+                  ].map((c) => (
+                    <button
+                      key={c.hex}
+                      type="button"
+                      title={c.label}
+                      onClick={() => setStampColor(c.hex)}
+                      className={`w-5 h-5 rounded-full border transition-transform ${
+                        stampColor === c.hex ? "scale-125 ring-2 ring-orange-400 border-white" : "border-gray-600"
+                      }`}
+                      style={{ backgroundColor: c.hex }}
+                    />
+                  ))}
+                </div>
+              </div>
             </div>
           )}
 
@@ -5785,7 +6255,7 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                   title="フォント種類"
                 >
                   {FONT_OPTIONS.map((f) => (
-                    <option key={f.value} value={f.value}>
+                    <option key={f.id} value={f.id}>
                       {f.name}
                     </option>
                   ))}
@@ -5969,7 +6439,7 @@ const ImageEditor = ({ file, onSave, onClose }) => {
             ref={containerRef}
             className="w-full h-full overflow-auto p-6 sm:p-10 flex"
             style={{
-              cursor: isSpacePressed || isPanningRef.current ? "grab" : tool === "hand" ? "grab" : "default"
+              cursor: isSpacePressed || tool === "hand" ? "grab" : "default"
             }}
           >
             {/* 中央揃えラッパー（画像拡大時にスクロール可能領域を正しく展開） */}
@@ -5978,8 +6448,8 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                 ref={canvasWrapperRef}
                 className="relative shadow-2xl transition-[width,height] duration-75 ease-out"
                 style={{
-                  width: imgRef.current ? `${imgRef.current.naturalWidth * zoomScale}px` : "auto",
-                  height: imgRef.current ? `${imgRef.current.naturalHeight * zoomScale}px` : "auto"
+                  width: imgDims.width > 0 ? `${imgDims.width * zoomScale}px` : "auto",
+                  height: imgDims.height > 0 ? `${imgDims.height * zoomScale}px` : "auto"
                 }}
               >
                 <canvas
@@ -5987,7 +6457,6 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                   onMouseDown={(e) => handleStart(e.clientX, e.clientY, e.button)}
                   onMouseMove={(e) => handleMove(e.clientX, e.clientY, e.shiftKey)}
                   onMouseUp={handleEnd}
-                  onMouseLeave={handleEnd}
                   onDoubleClick={handleDoubleClick}
                   onTouchStart={(e) => {
                     if (e.touches.length > 0) handleStart(e.touches[0].clientX, e.touches[0].clientY, 0);
@@ -5996,19 +6465,21 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                     if (e.touches.length > 0) handleMove(e.touches[0].clientX, e.touches[0].clientY);
                   }}
                   onTouchEnd={handleEnd}
-                  className={`w-full h-full block bg-white border border-gray-800 ${
-                    isSpacePressed || tool === "hand"
-                      ? "cursor-grab"
-                      : tool === "select"
-                        ? "cursor-default"
-                        : tool === "text"
-                          ? "cursor-text"
-                          : "cursor-crosshair"
-                  }`}
+                  style={{
+                    cursor:
+                      isSpacePressed || tool === "hand"
+                        ? "grab"
+                        : tool === "select"
+                          ? hoverCursor
+                          : tool === "text"
+                            ? "text"
+                            : "crosshair"
+                  }}
+                  className="w-full h-full block bg-white border border-gray-800"
                 />
 
                 {/* キャンバス上の直接文字入力（枠線なし・点滅カーソルのみ・Canvasとピクセル完全一致） */}
-                {editingTextState && canvasRef.current && (() => {
+                {editingTextState && imgDims.width > 0 && imgDims.height > 0 && (() => {
                   const curFontSize = editingTextState.fontSize || fontSize || 30;
                   const curFontFamily = editingTextState.fontFamily || fontFamily || "sans";
                   const curP = curFontSize * 0.25;
@@ -6018,11 +6489,11 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                   const bColor = editingTextState.borderColor || activeBorderColor || "#d1d5db";
 
                   const leftPct = hasBg
-                    ? ((editingTextState.canvasX - curP) / canvasRef.current.width) * 100
-                    : (editingTextState.canvasX / canvasRef.current.width) * 100;
+                    ? ((editingTextState.canvasX - curP) / imgDims.width) * 100
+                    : (editingTextState.canvasX / imgDims.width) * 100;
                   const topPct = hasBg
-                    ? ((editingTextState.canvasY - curP) / canvasRef.current.height) * 100
-                    : ((editingTextState.canvasY + curP * 0.15) / canvasRef.current.height) * 100;
+                    ? ((editingTextState.canvasY - curP) / imgDims.height) * 100
+                    : ((editingTextState.canvasY + curP * 0.15) / imgDims.height) * 100;
 
                   return (
                     <div
@@ -6584,6 +7055,8 @@ export default function App() {
             ? {
                 ...f,
                 originalSrc: newOriginalSrc,
+                baseOriginalSrc: newOriginalSrc,
+                savedElements: [],
                 src: newDisplaySrc,
                 size: dataURLtoBlob(newDisplaySrc).size
               }
@@ -6944,17 +7417,30 @@ export default function App() {
               setFiles((prev) =>
                 prev.map((f) =>
                   f.id === instantItem.id
-                    ? {
-                        ...f,
-                        originalSrc: fullItem.originalSrc,
-                        src: resizedDataUrl,
-                        size: newSize,
-                        isOptimizing: false
-                      }
+                    ? f.userEdited
+                      ? {
+                          ...f,
+                          baseOriginalSrc: f.baseOriginalSrc === instantUrl ? fullItem.originalSrc : f.baseOriginalSrc,
+                          isOptimizing: false
+                        }
+                      : {
+                          ...f,
+                          originalSrc: fullItem.originalSrc,
+                          baseOriginalSrc: fullItem.originalSrc,
+                          src: resizedDataUrl,
+                          size: newSize,
+                          isOptimizing: false
+                        }
                     : f
                 )
               );
-              try { URL.revokeObjectURL(instantUrl); } catch (_) {}
+              setTimeout(() => {
+                try {
+                  URL.revokeObjectURL(instantUrl);
+                } catch {
+                  // ignore revoke error
+                }
+              }, 10000);
             } catch (err) {
               console.warn("Background optimization error:", err);
             }
@@ -7600,7 +8086,7 @@ export default function App() {
     setProcessStatus("");
   };
 
-  const handleSaveEditedImage = async (dataUrl) => {
+  const handleSaveEditedImage = async (dataUrl, baseDataUrl, savedElements) => {
     if (!editingFile) return;
     const { id } = editingFile;
     const fileIndex = files.findIndex((f) => f.id === id);
@@ -7620,7 +8106,10 @@ export default function App() {
     const newFiles = [...files];
     newFiles[fileIndex] = {
       ...file,
-      originalSrc: dataUrl, // Save new high-res base
+      originalSrc: dataUrl, // Save new high-res composite for PDF/download/resize
+      baseOriginalSrc: baseDataUrl || file.baseOriginalSrc || file.originalSrc,
+      savedElements: Array.isArray(savedElements) ? savedElements : [],
+      userEdited: true,
       src: newDisplaySrc,
       size: Math.round((newDisplaySrc.length * 3) / 4)
     };
