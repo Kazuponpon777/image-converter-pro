@@ -1420,6 +1420,7 @@ const ImageEditor = ({ file, onSave, onClose }) => {
   const [textShowBorder, setTextShowBorder] = useState(true); // 座布団の枠線あり/なし
   const [textBorderColor, setTextBorderColor] = useState("#d1d5db"); // 座布団の枠線色
   const [shapeStyle, setShapeStyle] = useState("stroke"); // 初期値を枠線(LINE)にして文字を囲みやすくする
+  const [lineDashStyle, setLineDashStyle] = useState("solid"); // 直線・二重線のスタイル ("solid" | "dashed" | "dotted")
   const [stampType, setStampType] = useState("approved");
   const [stampText, setStampText] = useState("佐藤");
   const [stampColor, setStampColor] = useState("#ff0000");
@@ -1520,6 +1521,10 @@ const ImageEditor = ({ file, onSave, onClose }) => {
         drawTextElement(cleanCtx, el);
       } else if (el.type === "arrow") {
         drawArrowElement(cleanCtx, el);
+      } else if (el.type === "line") {
+        drawLineElement(cleanCtx, el);
+      } else if (el.type === "double_line") {
+        drawDoubleLineElement(cleanCtx, el);
       } else if (el.type === "callout") {
         drawCalloutElement(cleanCtx, el);
       } else if (el.type === "sticky") {
@@ -2246,6 +2251,85 @@ const ImageEditor = ({ file, onSave, onClose }) => {
     ctx.restore();
   };
 
+  // 直線（Line）の描画
+  const drawLineElement = (ctx, el) => {
+    const fromX = el.x;
+    const fromY = el.y;
+    const toX = el.x + el.w;
+    const toY = el.y + el.h;
+    const len = Math.hypot(el.w, el.h);
+    if (len < 2) return;
+
+    const lineWidth = el.brushSize || 4;
+
+    ctx.save();
+    ctx.strokeStyle = el.color || "#ff0000";
+    ctx.lineWidth = lineWidth;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+
+    if (el.dashStyle === "dashed") {
+      ctx.setLineDash([lineWidth * 2.5, lineWidth * 1.5]);
+    } else if (el.dashStyle === "dotted") {
+      ctx.setLineDash([lineWidth, lineWidth * 1.2]);
+    } else {
+      ctx.setLineDash([]);
+    }
+
+    ctx.beginPath();
+    ctx.moveTo(fromX, fromY);
+    ctx.lineTo(toX, toY);
+    ctx.stroke();
+    ctx.restore();
+  };
+
+  // 二重線（Double Line）の描画
+  const drawDoubleLineElement = (ctx, el) => {
+    const fromX = el.x;
+    const fromY = el.y;
+    const toX = el.x + el.w;
+    const toY = el.y + el.h;
+    const len = Math.hypot(el.w, el.h);
+    if (len < 2) return;
+
+    const angle = Math.atan2(el.h, el.w);
+    const nx = -Math.sin(angle);
+    const ny = Math.cos(angle);
+
+    const baseSize = el.brushSize || 4;
+    const lineWidth = Math.max(1.5, baseSize * 0.55);
+    const gap = Math.max(3, lineWidth * 1.2);
+    const offset = (lineWidth + gap) / 2;
+
+    ctx.save();
+    ctx.strokeStyle = el.color || "#ff0000";
+    ctx.lineWidth = lineWidth;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+
+    if (el.dashStyle === "dashed") {
+      ctx.setLineDash([lineWidth * 2.5, lineWidth * 1.5]);
+    } else if (el.dashStyle === "dotted") {
+      ctx.setLineDash([lineWidth, lineWidth * 1.2]);
+    } else {
+      ctx.setLineDash([]);
+    }
+
+    // 1本目
+    ctx.beginPath();
+    ctx.moveTo(fromX - nx * offset, fromY - ny * offset);
+    ctx.lineTo(toX - nx * offset, toY - ny * offset);
+    ctx.stroke();
+
+    // 2本目
+    ctx.beginPath();
+    ctx.moveTo(fromX + nx * offset, fromY + ny * offset);
+    ctx.lineTo(toX + nx * offset, toY + ny * offset);
+    ctx.stroke();
+
+    ctx.restore();
+  };
+
   // 矢印（アロー）の描画
   const drawArrowElement = (ctx, el) => {
     const fromX = el.x;
@@ -2556,6 +2640,10 @@ const ImageEditor = ({ file, onSave, onClose }) => {
         }
       } else if (el.type === "arrow") {
         drawArrowElement(ctx, el);
+      } else if (el.type === "line") {
+        drawLineElement(ctx, el);
+      } else if (el.type === "double_line") {
+        drawDoubleLineElement(ctx, el);
       } else if (el.type === "callout") {
         drawCalloutElement(ctx, el);
       } else if (el.type === "sticky") {
@@ -2753,7 +2841,7 @@ const ImageEditor = ({ file, onSave, onClose }) => {
 
             ctx.setLineDash([8, 6]);
           }
-        } else if (el.type === "arrow") {
+        } else if (el.type === "arrow" || el.type === "line" || el.type === "double_line") {
           const fromX = el.x;
           const fromY = el.y;
           const toX = el.x + el.w;
@@ -2963,7 +3051,7 @@ const ImageEditor = ({ file, onSave, onClose }) => {
         ) {
           return el;
         }
-      } else if (el.type === "arrow") {
+      } else if (el.type === "arrow" || el.type === "line" || el.type === "double_line") {
         // 矢印の当たり判定（線分と点との距離計算）
         const x1 = el.x;
         const y1 = el.y;
@@ -3078,7 +3166,7 @@ const ImageEditor = ({ file, onSave, onClose }) => {
       if (Math.hypot(pos.x - xMin, pos.y - yMax) <= hitRadius) return "sw"; // 左下
       if (Math.hypot(pos.x - xMax, pos.y - yMin) <= hitRadius) return "ne"; // 右上
       if (Math.hypot(pos.x - xMin, pos.y - yMin) <= hitRadius) return "nw"; // 左上
-    } else if (el.type === "arrow") {
+    } else if (el.type === "arrow" || el.type === "line" || el.type === "double_line") {
       const fromX = el.x;
       const fromY = el.y;
       const toX = el.x + el.w;
@@ -3210,17 +3298,18 @@ const ImageEditor = ({ file, onSave, onClose }) => {
       activeShapeId.current = newEl.id;
       isDrawingShape.current = true;
       dragStartPos.current = pos;
-    } else if (tool === "arrow") {
+    } else if (tool === "arrow" || tool === "line" || tool === "double_line") {
       pushHistory(elements);
       const newEl = {
         id: generateId(),
-        type: "arrow",
+        type: tool,
         x: pos.x,
         y: pos.y,
         w: 0,
         h: 0,
         color: color,
-        brushSize: Math.max(3, brushSize)
+        brushSize: Math.max(2, brushSize),
+        dashStyle: lineDashStyle === "dashed" ? "dashed" : lineDashStyle === "dotted" ? "dotted" : "solid"
       };
       setElements((prev) => [...prev, newEl]);
       activeShapeId.current = newEl.id;
@@ -3289,7 +3378,7 @@ const ImageEditor = ({ file, onSave, onClose }) => {
   };
 
   // Pointer Move handler
-  const handleMove = (clientX, clientY) => {
+  const handleMove = (clientX, clientY, shiftKey = false) => {
     if (isPanningRef.current) {
       const container = containerRef.current;
       if (container) {
@@ -3357,7 +3446,7 @@ const ImageEditor = ({ file, onSave, onClose }) => {
               newH = origH - dy;
             }
             return { ...el, x: newX, y: newY, w: newW, h: newH };
-          } else if (el.type === "arrow") {
+          } else if (el.type === "arrow" || el.type === "line" || el.type === "double_line") {
             if (handle === "se") {
               return { ...el, w: origW + dx, h: origH + dy };
             } else if (handle === "nw") {
@@ -3417,15 +3506,36 @@ const ImageEditor = ({ file, onSave, onClose }) => {
           };
         })
       );
-    } else if ((tool === "rect" || tool === "ellipse" || tool === "callout" || tool === "sticky" || tool === "arrow" || tool === "mosaic" || tool === "mask") && isDrawingShape.current && activeShapeId.current) {
+    } else if ((tool === "rect" || tool === "ellipse" || tool === "callout" || tool === "sticky" || tool === "arrow" || tool === "line" || tool === "double_line" || tool === "mosaic" || tool === "mask") && isDrawingShape.current && activeShapeId.current) {
       const start = dragStartPos.current;
+      let rawW = pos.x - start.x;
+      let rawH = pos.y - start.y;
+
+      if (shiftKey && (tool === "arrow" || tool === "line" || tool === "double_line")) {
+        const absX = Math.abs(rawW);
+        const absY = Math.abs(rawH);
+        if (absY < absX * 0.414) {
+          rawH = 0; // 完全な水平線
+        } else if (absX < absY * 0.414) {
+          rawW = 0; // 完全な垂直線
+        } else {
+          const d = Math.max(absX, absY);
+          rawW = Math.sign(rawW) * d;
+          rawH = Math.sign(rawH) * d;
+        }
+      } else if (shiftKey && (tool === "rect" || tool === "ellipse" || tool === "mosaic" || tool === "mask")) {
+        const size = Math.max(Math.abs(rawW), Math.abs(rawH));
+        rawW = Math.sign(rawW) * size;
+        rawH = Math.sign(rawH) * size;
+      }
+
       setElements((prev) =>
         prev.map((el) => {
           if (el.id !== activeShapeId.current) return el;
           return {
             ...el,
-            w: pos.x - start.x,
-            h: pos.y - start.y
+            w: rawW,
+            h: rawH
           };
         })
       );
@@ -3454,6 +3564,10 @@ const ImageEditor = ({ file, onSave, onClose }) => {
           if (Math.abs(el.w || 0) < 10 && Math.abs(el.h || 0) < 10) {
             if (el.type === "arrow") {
               return { ...el, w: 100, h: -70 };
+            } else if (el.type === "line") {
+              return { ...el, w: 140, h: 0 };
+            } else if (el.type === "double_line") {
+              return { ...el, w: 140, h: 0 };
             } else if (el.type === "callout") {
               return {
                 ...el,
@@ -3917,6 +4031,45 @@ const ImageEditor = ({ file, onSave, onClose }) => {
               >
                 <ArrowUpRight className="w-4 h-4 text-orange-400" />
                 <span className="text-sm">矢印(↗)</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setTool("line");
+                  setSelectedId(null);
+                  if (editingTextState && !editingTextState.id) setEditingTextState(null);
+                }}
+                className={`flex items-center justify-center space-x-2 py-2.5 rounded-lg border transition-all ${
+                  tool === "line"
+                    ? "bg-orange-600 border-orange-500 text-white shadow-lg shadow-orange-600/20 font-bold"
+                    : "bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-750"
+                }`}
+                title="直線（Shiftキーで水平・垂直・45度固定）"
+              >
+                <svg className="w-4 h-4 text-orange-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                  <line x1="4" y1="12" x2="20" y2="12" />
+                </svg>
+                <span className="text-sm">直線(―)</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setTool("double_line");
+                  setSelectedId(null);
+                  if (editingTextState && !editingTextState.id) setEditingTextState(null);
+                }}
+                className={`flex items-center justify-center space-x-2 py-2.5 rounded-lg border transition-all ${
+                  tool === "double_line"
+                    ? "bg-orange-600 border-orange-500 text-white shadow-lg shadow-orange-600/20 font-bold"
+                    : "bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-750"
+                }`}
+                title="二重線（帳票の修正・強調・見出し用）"
+              >
+                <svg className="w-4 h-4 text-orange-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
+                  <line x1="4" y1="9" x2="20" y2="9" />
+                  <line x1="4" y1="15" x2="20" y2="15" />
+                </svg>
+                <span className="text-sm">二重線(═)</span>
               </button>
 
               <button
@@ -4837,26 +4990,54 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                 </div>
               )}
 
-              {/* Arrow specific inspector */}
-              {selectedElement.type === "arrow" && (
+              {/* Arrow / Line / Double Line specific inspector */}
+              {(selectedElement.type === "arrow" || selectedElement.type === "line" || selectedElement.type === "double_line") && (
                 <div className="space-y-3">
                   <div className="space-y-1">
                     <div className="flex justify-between text-xs">
-                      <span className="text-gray-300">矢印の太さ</span>
-                      <span className="text-blue-400 font-bold">{selectedElement.brushSize || 5}px</span>
+                      <span className="text-gray-300">
+                        {selectedElement.type === "arrow" ? "矢印の太さ" : selectedElement.type === "line" ? "線の太さ" : "二重線の太さ"}
+                      </span>
+                      <span className="text-blue-400 font-bold">{selectedElement.brushSize || 4}px</span>
                     </div>
                     <input
                       type="range"
-                      min="2"
+                      min="1"
                       max="40"
-                      value={selectedElement.brushSize || 5}
+                      value={selectedElement.brushSize || 4}
                       onChange={(e) => updateSelectedElement({ brushSize: parseInt(e.target.value) })}
                       className="w-full h-1.5 bg-gray-750 rounded-lg appearance-none cursor-pointer"
                     />
                   </div>
 
+                  {(selectedElement.type === "line" || selectedElement.type === "double_line") && (
+                    <div className="space-y-1">
+                      <span className="text-xs text-gray-300">線の種類</span>
+                      <div className="grid grid-cols-3 gap-1.5 pt-1">
+                        {[
+                          { id: "solid", label: "実線" },
+                          { id: "dashed", label: "破線" },
+                          { id: "dotted", label: "点線" }
+                        ].map((st) => (
+                          <button
+                            key={st.id}
+                            type="button"
+                            onClick={() => updateSelectedElement({ dashStyle: st.id })}
+                            className={`py-1 text-xs rounded border transition-all ${
+                              (selectedElement.dashStyle || "solid") === st.id
+                                ? "bg-orange-600 border-orange-500 text-white font-bold"
+                                : "bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-700"
+                            }`}
+                          >
+                            {st.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
                   <div className="flex items-center justify-between pt-1">
-                    <span className="text-xs text-gray-300">矢印の色</span>
+                    <span className="text-xs text-gray-300">線の色</span>
                     <div className="flex items-center gap-1">
                       {["#ff0000", "#2563eb", "#000000", "#16a34a", "#f59e0b", "#ffffff"].map((c) => (
                         <button
@@ -5428,11 +5609,11 @@ const ImageEditor = ({ file, onSave, onClose }) => {
           )}
 
           {/* Brush / Shape Thickness Settings */}
-          {(tool === "brush" || tool === "arrow" || tool === "callout" || ((tool === "rect" || tool === "circle" || tool === "ellipse") && shapeStyle === "stroke")) && (
+          {(tool === "brush" || tool === "arrow" || tool === "line" || tool === "double_line" || tool === "callout" || ((tool === "rect" || tool === "circle" || tool === "ellipse") && shapeStyle === "stroke")) && (
             <div className="space-y-2 animate-fadeIn">
               <div className="flex justify-between text-xs">
                 <label className="font-bold uppercase tracking-wider text-gray-400">
-                  {tool === "brush" ? "ブラシサイズ" : tool === "arrow" ? "矢印の太さ" : "枠線の太さ (LINE)"}
+                  {tool === "brush" ? "ブラシサイズ" : tool === "arrow" ? "矢印の太さ" : tool === "line" ? "線の太さ" : tool === "double_line" ? "二重線の太さ" : "枠線の太さ (LINE)"}
                 </label>
                 <span className="text-orange-500 font-bold">{brushSize}px</span>
               </div>
@@ -5444,6 +5625,35 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                 onChange={(e) => setBrushSize(parseInt(e.target.value))}
                 className="w-full h-1.5 bg-gray-750 rounded-lg appearance-none cursor-pointer"
               />
+            </div>
+          )}
+
+          {/* Line Dash Style Selector (直線・二重線で実線・破線・点線切り替え) */}
+          {(tool === "line" || tool === "double_line") && (
+            <div className="space-y-2 animate-fadeIn">
+              <label className="text-xs font-bold uppercase tracking-wider text-gray-400">
+                線の種類
+              </label>
+              <div className="grid grid-cols-3 gap-1.5">
+                {[
+                  { id: "solid", label: "実線" },
+                  { id: "dashed", label: "破線" },
+                  { id: "dotted", label: "点線" }
+                ].map((st) => (
+                  <button
+                    key={st.id}
+                    type="button"
+                    onClick={() => setLineDashStyle(st.id)}
+                    className={`py-2 rounded-lg text-xs font-medium border transition-all ${
+                      lineDashStyle === st.id
+                        ? "bg-orange-600 border-orange-500 text-white shadow-lg shadow-orange-600/20 font-bold"
+                        : "bg-gray-800 border-gray-700 text-gray-400 hover:text-white hover:bg-gray-750"
+                    }`}
+                  >
+                    {st.label}
+                  </button>
+                ))}
+              </div>
             </div>
           )}
 
@@ -5775,7 +5985,7 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                 <canvas
                   ref={canvasRef}
                   onMouseDown={(e) => handleStart(e.clientX, e.clientY, e.button)}
-                  onMouseMove={(e) => handleMove(e.clientX, e.clientY)}
+                  onMouseMove={(e) => handleMove(e.clientX, e.clientY, e.shiftKey)}
                   onMouseUp={handleEnd}
                   onMouseLeave={handleEnd}
                   onDoubleClick={handleDoubleClick}
@@ -8074,8 +8284,21 @@ export default function App() {
                     <SortableFileCard key={file.id} id={file.id}>
                       {({ attributes, listeners, isDragging }) => (
                         <>
-                  {/* Image Preview & Controls */}
-                  <div className="aspect-[3/2] bg-orange-100/50 relative overflow-hidden shrink-0">
+                  {/* Image Preview & Controls (クリックで即座に編集画面を開く) */}
+                  <div
+                    onClick={(e) => {
+                      if (isDragging) return;
+                      if (!file.isUnsupported) {
+                        setEditingFile(file);
+                      } else if (file.isEmailPackage && file.emailParsed) {
+                        setEmailToExtract({ file: file.rawFile, parsed: file.emailParsed });
+                      }
+                    }}
+                    className={`aspect-[3/2] bg-orange-100/50 relative overflow-hidden shrink-0 ${
+                      !file.isUnsupported ? "cursor-pointer group/preview" : ""
+                    }`}
+                    title={!file.isUnsupported ? "クリックして編集画面を開く" : undefined}
+                  >
                     <div className="absolute inset-0 bg-[url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI4IiBoZWlnaHQ9IjgiPgo8cmVjdCB3aWR0aD0iOCIgaGVpZ2h0PSI4IiBmaWxsPSIjZmZmN2VkIi8+CjxyZWN0IHdpZHRoPSI0IiBoZWlnaHQ9IjgiIGZpbGw9IiNmZWQ3YWEiLz4KPHJlY3QgeD0iNCIgeT0iNCIgd2lkdGg9IjQiIGhlaWdodD0iNCIgZmlsbD0iI2ZlZDdhYSIvPgo8L3N2Zz4=')] opacity-50"></div>
                     {file.isUnsupported ? (
                       <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 p-4 text-center text-gray-500">
@@ -8108,7 +8331,7 @@ export default function App() {
                       <img
                         src={file.src}
                         alt={file.name}
-                        className="absolute inset-0 w-full h-full object-contain p-4 transition-transform duration-500 group-hover:scale-105"
+                        className="absolute inset-0 w-full h-full object-contain p-4 transition-transform duration-500 group-hover:scale-105 pointer-events-none"
                       />
                     )}
 
@@ -8116,6 +8339,7 @@ export default function App() {
                       type="button"
                       {...attributes}
                       {...listeners}
+                      onClick={(e) => e.stopPropagation()}
                       aria-label={`${index + 1}番目の画像を並び替え`}
                       className={`absolute bottom-2 left-1/2 -translate-x-1/2 z-30 flex items-center gap-1 px-3 py-1.5 rounded-full border text-xs font-bold shadow-md select-none touch-none transition-colors ${
                         isDragging
@@ -8129,9 +8353,13 @@ export default function App() {
                     </button>
 
                     {/* Left/Right Reordering Controls */}
-                    <div className="absolute bottom-2 left-2 flex space-x-1 opacity-0 group-hover:opacity-100 transition-opacity z-10">
+                    <div className="absolute bottom-2 left-2 flex space-x-1 opacity-0 group-hover:opacity-100 transition-opacity z-30">
                       <button
-                        onClick={() => moveFile(index, "left")}
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          moveFile(index, "left");
+                        }}
                         disabled={index === 0}
                         className="p-1.5 bg-white/90 disabled:opacity-40 text-gray-600 rounded-full shadow-sm hover:bg-orange-500 hover:text-white transition-all border border-gray-200"
                         title="左へ移動"
@@ -8139,7 +8367,11 @@ export default function App() {
                         <ChevronLeft className="w-3.5 h-3.5" />
                       </button>
                       <button
-                        onClick={() => moveFile(index, "right")}
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          moveFile(index, "right");
+                        }}
                         disabled={index === files.length - 1}
                         className="p-1.5 bg-white/90 disabled:opacity-40 text-gray-600 rounded-full shadow-sm hover:bg-orange-500 hover:text-white transition-all border border-gray-200"
                         title="右へ移動"
@@ -8149,7 +8381,7 @@ export default function App() {
                     </div>
 
                     {/* Badge */}
-                    <div className="absolute top-2 right-2 flex flex-col items-end gap-1 z-10">
+                    <div className="absolute top-2 right-2 flex flex-col items-end gap-1 z-20 pointer-events-none">
                       <span className="bg-gray-900 text-white text-xs font-bold min-w-8 h-8 px-2 rounded-full shadow flex items-center justify-center">
                         {index + 1}
                       </span>
@@ -8169,12 +8401,14 @@ export default function App() {
                     </div>
 
                     {/* Overlay Actions */}
-                    <div className="absolute inset-0 bg-white/60 opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex flex-col items-center justify-center space-y-2 backdrop-blur-[2px]">
+                    <div className="absolute inset-0 bg-stone-900/40 opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex flex-col items-center justify-center space-y-2.5 backdrop-blur-[1.5px] z-10 pointer-events-none">
                       {file.isUnsupported ? (
-                        <div className="flex space-x-2">
+                        <div className="flex space-x-2 pointer-events-auto">
                           {file.isEmailPackage && (
                             <button
-                              onClick={() => {
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
                                 if (file.emailParsed) {
                                   setEmailToExtract({ file: file.rawFile, parsed: file.emailParsed });
                                 }
@@ -8187,7 +8421,11 @@ export default function App() {
                             </button>
                           )}
                           <button
-                            onClick={() => downloadFile(file)}
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              downloadFile(file);
+                            }}
                             className="p-2 bg-gray-800 hover:bg-gray-700 text-white rounded-lg shadow-lg transform transition-transform hover:scale-105 flex items-center space-x-1 cursor-pointer"
                             title="元ファイルをダウンロード"
                           >
@@ -8195,37 +8433,58 @@ export default function App() {
                             <span className="text-xs font-bold">保存</span>
                           </button>
                         </div>
-                      ) : <div className="flex space-x-2">
-                        <button
-                          onClick={() => setEditingFile(file)}
-                          className="p-2 bg-orange-600 hover:bg-orange-500 text-white rounded-lg shadow-lg transform transition-transform hover:scale-105 flex items-center space-x-1"
-                          title="墨消し・文字入れ"
-                        >
-                          <Pencil className="w-4 h-4" />
-                          <span className="text-xs font-bold">編集</span>
-                        </button>
-                        <button
-                          onClick={() => copyToClipboard(file)}
-                          className="p-2 bg-green-600 hover:bg-green-500 text-white rounded-lg shadow-lg transform transition-transform hover:scale-105 flex items-center space-x-1"
-                          title="コピー (Ctrl+Vで貼り付け)"
-                        >
-                          <Copy className="w-4 h-4" />
-                          <span className="text-xs font-bold">Copy</span>
-                        </button>
-                        <button
-                          onClick={() => downloadFile(file)}
-                          className="p-2 bg-gray-800 hover:bg-gray-700 text-white rounded-lg shadow-lg transform transition-transform hover:scale-105"
-                          title="ダウンロード"
-                        >
-                          <Download className="w-4 h-4" />
-                        </button>
-                      </div>}
-                      <button
-                        onClick={() => removeFile(file.id)}
-                        className="px-3 py-1 bg-gray-200 hover:bg-red-500 text-gray-600 hover:text-white rounded-full text-xs font-medium shadow transition-colors"
-                      >
-                        削除
-                      </button>
+                      ) : (
+                        <div className="flex flex-col items-center gap-2 pointer-events-auto">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setEditingFile(file);
+                            }}
+                            className="px-4 py-2 bg-orange-600 hover:bg-orange-500 text-white rounded-xl shadow-xl transform transition-transform hover:scale-105 flex items-center space-x-1.5 font-bold text-xs"
+                            title="文字入れ・図形・墨消しなどの編集を開く"
+                          >
+                            <Pencil className="w-4 h-4" />
+                            <span>クリックして編集</span>
+                          </button>
+                          <div className="flex items-center space-x-1.5">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                copyToClipboard(file);
+                              }}
+                              className="px-2.5 py-1 bg-white/90 hover:bg-white text-stone-800 rounded-lg shadow text-[11px] font-semibold flex items-center space-x-1 transition-transform hover:scale-105"
+                              title="コピー (Ctrl+Vで貼り付け)"
+                            >
+                              <Copy className="w-3.5 h-3.5 text-emerald-600" />
+                              <span>Copy</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                downloadFile(file);
+                              }}
+                              className="p-1.5 bg-white/90 hover:bg-white text-stone-800 rounded-lg shadow text-[11px] transition-transform hover:scale-105"
+                              title="ダウンロード"
+                            >
+                              <Download className="w-3.5 h-3.5 text-blue-600" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                removeFile(file.id);
+                              }}
+                              className="px-2 py-1 bg-red-600/90 hover:bg-red-600 text-white rounded-lg text-[11px] font-semibold shadow transition-transform hover:scale-105"
+                              title="削除"
+                            >
+                              削除
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -8332,18 +8591,29 @@ export default function App() {
                       </div>
                       {file.isUnsupported ? (
                         <span className="text-[10px] font-bold text-slate-500">編集対象外</span>
-                      ) : <div className="flex items-center space-x-1">
-                        <select
-                          value={file.type}
-                          onChange={(e) => changeSingleFileFormat(file.id, e.target.value)}
-                          className="uppercase bg-orange-50 hover:bg-orange-100 text-orange-800 font-extrabold border border-orange-300 text-[10px] rounded px-1.5 py-0.5 cursor-pointer shadow-xs focus:ring-1 focus:ring-orange-500 transition-colors"
-                          title="この画像だけの形式・拡張子を変更"
-                        >
-                          <option value="image/png">PNG</option>
-                          <option value="image/jpeg">JPG</option>
-                          <option value="image/webp">WEBP</option>
-                        </select>
-                      </div>}
+                      ) : (
+                        <div className="flex items-center space-x-1.5">
+                          <button
+                            type="button"
+                            onClick={() => setEditingFile(file)}
+                            className="px-2 py-0.5 bg-orange-600 hover:bg-orange-500 text-white rounded text-[11px] font-bold shadow-xs flex items-center gap-1 transition-colors"
+                            title="文字入れ・図形・墨消しなどの編集を開く"
+                          >
+                            <Pencil className="w-3 h-3" />
+                            <span>編集</span>
+                          </button>
+                          <select
+                            value={file.type}
+                            onChange={(e) => changeSingleFileFormat(file.id, e.target.value)}
+                            className="uppercase bg-orange-50 hover:bg-orange-100 text-orange-800 font-extrabold border border-orange-300 text-[10px] rounded px-1.5 py-0.5 cursor-pointer shadow-xs focus:ring-1 focus:ring-orange-500 transition-colors"
+                            title="この画像だけの形式・拡張子を変更"
+                          >
+                            <option value="image/png">PNG</option>
+                            <option value="image/jpeg">JPG</option>
+                            <option value="image/webp">WEBP</option>
+                          </select>
+                        </div>
+                      )}
                     </div>
                   </div>
                         </>
