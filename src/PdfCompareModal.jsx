@@ -64,7 +64,99 @@ export const PdfCompareModal = ({ isOpen, onClose, pdfjsOptions }) => {
   const [isDraggingNew, setIsDraggingNew] = useState(false);
 
   const sliderContainerRef = useRef(null);
+  const compareWorkspaceRef = useRef(null);
   const [isDraggingSlider, setIsDraggingSlider] = useState(false);
+  const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
+  const zoomScaleRef = useRef(1.0);
+  const panOffsetRef = useRef({ x: 0, y: 0 });
+  const isPinchingRef = useRef(false);
+  const pinchStateRef = useRef({
+    startDist: 0,
+    startScale: 1,
+    lastMidX: 0,
+    lastMidY: 0
+  });
+
+  useEffect(() => {
+    zoomScaleRef.current = zoomScale;
+  }, [zoomScale]);
+
+  useEffect(() => {
+    panOffsetRef.current = panOffset;
+  }, [panOffset]);
+
+  // タブレット（iPad Safari等）での2本指ピンチ拡大・縮小＆移動（画面全体の拡大を防止）
+  useEffect(() => {
+    const ws = compareWorkspaceRef.current;
+    if (!ws || !isOpen) return;
+
+    const getTouchDistAndMid = (t1, t2) => ({
+      dist: Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY),
+      midX: (t1.clientX + t2.clientX) / 2,
+      midY: (t1.clientY + t2.clientY) / 2
+    });
+
+    const handleTouchStart = (e) => {
+      if (e.touches.length >= 2) {
+        if (e.cancelable) e.preventDefault();
+        isPinchingRef.current = true;
+        setIsDraggingSlider(false);
+        const { dist, midX, midY } = getTouchDistAndMid(e.touches[0], e.touches[1]);
+        pinchStateRef.current = {
+          startDist: Math.max(10, dist),
+          startScale: zoomScaleRef.current,
+          lastMidX: midX,
+          lastMidY: midY
+        };
+      }
+    };
+
+    const handleTouchMove = (e) => {
+      if (e.touches.length >= 2 && isPinchingRef.current) {
+        if (e.cancelable) e.preventDefault();
+        const { dist, midX, midY } = getTouchDistAndMid(e.touches[0], e.touches[1]);
+        const { startDist, startScale, lastMidX, lastMidY } = pinchStateRef.current;
+        const nextScale = Math.max(0.5, Math.min(4.0, Number((startScale * (dist / startDist)).toFixed(2))));
+        const dx = midX - lastMidX;
+        const dy = midY - lastMidY;
+
+        pinchStateRef.current.lastMidX = midX;
+        pinchStateRef.current.lastMidY = midY;
+        zoomScaleRef.current = nextScale;
+        setZoomMode("custom");
+        setZoomScale(nextScale);
+        setPanOffset((prev) => ({ x: prev.x + dx, y: prev.y + dy }));
+      }
+    };
+
+    const handleTouchEnd = (e) => {
+      if (e.touches.length === 0) {
+        isPinchingRef.current = false;
+      }
+    };
+
+    const preventSafariGesture = (e) => {
+      if (e.cancelable) e.preventDefault();
+    };
+
+    ws.addEventListener("touchstart", handleTouchStart, { passive: false });
+    ws.addEventListener("touchmove", handleTouchMove, { passive: false });
+    ws.addEventListener("touchend", handleTouchEnd);
+    ws.addEventListener("touchcancel", handleTouchEnd);
+    ws.addEventListener("gesturestart", preventSafariGesture, { passive: false });
+    ws.addEventListener("gesturechange", preventSafariGesture, { passive: false });
+    ws.addEventListener("gestureend", preventSafariGesture, { passive: false });
+
+    return () => {
+      ws.removeEventListener("touchstart", handleTouchStart);
+      ws.removeEventListener("touchmove", handleTouchMove);
+      ws.removeEventListener("touchend", handleTouchEnd);
+      ws.removeEventListener("touchcancel", handleTouchEnd);
+      ws.removeEventListener("gesturestart", preventSafariGesture);
+      ws.removeEventListener("gesturechange", preventSafariGesture);
+      ws.removeEventListener("gestureend", preventSafariGesture);
+    };
+  }, [isOpen]);
 
   // iPad SafariのCanvasメモリ制限対策：不要になったCanvasのメモリを即時解放
   const releaseCanvas = (canvas) => {
@@ -454,6 +546,7 @@ export const PdfCompareModal = ({ isOpen, onClose, pdfjsOptions }) => {
   }, []);
 
   const handlePointerDown = (e) => {
+    if (isPinchingRef.current) return;
     setIsDraggingSlider(true);
     handleSliderMove(e.clientX);
   };
@@ -495,6 +588,9 @@ export const PdfCompareModal = ({ isOpen, onClose, pdfjsOptions }) => {
     setTotalPages(1);
     setManualShiftX(0);
     setManualShiftY(0);
+    setPanOffset({ x: 0, y: 0 });
+    setZoomMode("fit");
+    setZoomScale(1.0);
     setPageData({
       oldUrl: null,
       newUrl: null,
@@ -609,12 +705,13 @@ export const PdfCompareModal = ({ isOpen, onClose, pdfjsOptions }) => {
             </button>
 
             {/* ズーム */}
-            <div className="hidden xl:flex items-center space-x-1 bg-stone-800 px-2 py-1 rounded-xl border border-stone-700">
+            <div className="flex items-center space-x-1 bg-stone-800 px-2 py-1 rounded-xl border border-stone-700">
               <button
                 type="button"
                 onClick={() => {
                   setZoomMode("fit");
                   setZoomScale(1.0);
+                  setPanOffset({ x: 0, y: 0 });
                 }}
                 className={`px-2 py-0.5 rounded text-[11px] font-bold ${
                   zoomMode === "fit" ? "bg-orange-600 text-white" : "text-stone-400 hover:text-white"
@@ -627,6 +724,7 @@ export const PdfCompareModal = ({ isOpen, onClose, pdfjsOptions }) => {
                 onClick={() => {
                   setZoomMode("100");
                   setZoomScale(1.0);
+                  setPanOffset({ x: 0, y: 0 });
                 }}
                 className={`px-2 py-0.5 rounded text-[11px] font-bold ${
                   zoomMode === "100" ? "bg-orange-600 text-white" : "text-stone-400 hover:text-white"
@@ -750,7 +848,10 @@ export const PdfCompareModal = ({ isOpen, onClose, pdfjsOptions }) => {
       )}
 
       {/* 2. メインワークスペース */}
-      <main className="flex-1 w-full overflow-auto flex items-center justify-center p-4 relative">
+      <main
+        ref={compareWorkspaceRef}
+        className="flex-1 w-full overflow-auto flex items-center justify-center p-4 relative"
+      >
         {!isBothLoaded ? (
           <div className="max-w-4xl w-full grid grid-cols-1 md:grid-cols-2 gap-6 my-auto animate-fadeIn">
             {/* 左: 変更前 (旧バージョン) */}
@@ -863,7 +964,10 @@ export const PdfCompareModal = ({ isOpen, onClose, pdfjsOptions }) => {
             <div
               className="flex items-center justify-center w-full h-full p-2 transition-transform duration-100"
               style={{
-                transform: zoomMode === "custom" ? `scale(${zoomScale})` : "none"
+                transform:
+                  zoomMode === "custom"
+                    ? `translate(${panOffset.x}px, ${panOffset.y}px) scale(${zoomScale})`
+                    : "none"
               }}
             >
               {/* 1. 差分ハイライトモード */}

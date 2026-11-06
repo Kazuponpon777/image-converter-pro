@@ -1497,6 +1497,28 @@ const ImageEditor = ({ file, onSave, onClose }) => {
   const isPanningRef = useRef(false);
   const panStartRef = useRef({ x: 0, y: 0, scrollLeft: 0, scrollTop: 0 });
 
+  // タブレット・スマホ端末判定（iPadOSのデスクトップ表示モードを含む）＆2本指ピンチ管理
+  const [isTouchDevice] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return (
+      navigator.maxTouchPoints > 0 ||
+      "ontouchstart" in window ||
+      Boolean(window.matchMedia?.("(pointer: coarse)")?.matches)
+    );
+  });
+  const zoomScaleRef = useRef(1);
+  useEffect(() => {
+    zoomScaleRef.current = zoomScale;
+  }, [zoomScale]);
+  const isPinchingRef = useRef(false);
+  const pinchStateRef = useRef({
+    startDist: 0,
+    startScale: 1,
+    lastMidX: 0,
+    lastMidY: 0
+  });
+  const lastTapRef = useRef({ time: 0, x: 0, y: 0 });
+
   // Elements & History (再編集時には前回保存した要素リストを復元)
   const [elements, setElements] = useState(() =>
     Array.isArray(file.savedElements)
@@ -2150,6 +2172,110 @@ const ImageEditor = ({ file, onSave, onClose }) => {
     container.addEventListener("wheel", handleWheel, { passive: false });
     return () => container.removeEventListener("wheel", handleWheel);
   }, [zoomScale, tool]);
+
+  // タブレット（iPad Safari等）での2本指ピンチ拡大・縮小＆2本指移動（画面全体の拡大を防止しキャンバスのみ拡大）
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const getTouchDistAndMid = (t1, t2) => ({
+      dist: Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY),
+      midX: (t1.clientX + t2.clientX) / 2,
+      midY: (t1.clientY + t2.clientY) / 2
+    });
+
+    const handleContainerTouchStart = (e) => {
+      if (e.touches.length >= 2) {
+        if (e.cancelable) e.preventDefault();
+        isPinchingRef.current = true;
+
+        // 1本目の指が数ミリ秒先に触れて誤って描き始めた線や図形があれば自動キャンセル
+        if (activeShapeId.current) {
+          const cancelledId = activeShapeId.current;
+          setElements((prev) => prev.filter((el) => el.id !== cancelledId));
+          activeShapeId.current = null;
+        }
+        isMouseDown.current = false;
+        isDrawingShape.current = false;
+        isDraggingElement.current = false;
+        isResizingElement.current = false;
+        isPanningRef.current = false;
+
+        const { dist, midX, midY } = getTouchDistAndMid(e.touches[0], e.touches[1]);
+        pinchStateRef.current = {
+          startDist: Math.max(10, dist),
+          startScale: zoomScaleRef.current,
+          lastMidX: midX,
+          lastMidY: midY
+        };
+      }
+    };
+
+    const handleContainerTouchMove = (e) => {
+      if (e.touches.length >= 2 && isPinchingRef.current) {
+        if (e.cancelable) e.preventDefault();
+        const { dist, midX, midY } = getTouchDistAndMid(e.touches[0], e.touches[1]);
+        const { startDist, startScale, lastMidX, lastMidY } = pinchStateRef.current;
+
+        const prevScale = zoomScaleRef.current;
+        const nextScale = Math.max(0.15, Math.min(6.0, startScale * (dist / startDist)));
+        const rect = container.getBoundingClientRect();
+        const focalX = midX - rect.left;
+        const focalY = midY - rect.top;
+
+        const panDx = midX - lastMidX;
+        const panDy = midY - lastMidY;
+        const ratio = nextScale / prevScale;
+
+        const newScrollLeft = (container.scrollLeft - panDx + focalX) * ratio - focalX;
+        const newScrollTop = (container.scrollTop - panDy + focalY) * ratio - focalY;
+
+        pinchStateRef.current.lastMidX = midX;
+        pinchStateRef.current.lastMidY = midY;
+        zoomScaleRef.current = nextScale;
+        setIsFitMode(false);
+        setZoomScale(nextScale);
+
+        requestAnimationFrame(() => {
+          if (container) {
+            container.scrollLeft = newScrollLeft;
+            container.scrollTop = newScrollTop;
+          }
+        });
+      }
+    };
+
+    const handleContainerTouchEnd = (e) => {
+      if (e.touches.length < 2 && isPinchingRef.current) {
+        if (e.touches.length === 0) {
+          isPinchingRef.current = false;
+        }
+      }
+    };
+
+    // iPad Safari 固有の gesture イベントによるブラウザ全体ズームを抑止
+    const preventSafariGesture = (e) => {
+      if (e.cancelable) e.preventDefault();
+    };
+
+    container.addEventListener("touchstart", handleContainerTouchStart, { passive: false });
+    container.addEventListener("touchmove", handleContainerTouchMove, { passive: false });
+    container.addEventListener("touchend", handleContainerTouchEnd);
+    container.addEventListener("touchcancel", handleContainerTouchEnd);
+    container.addEventListener("gesturestart", preventSafariGesture, { passive: false });
+    container.addEventListener("gesturechange", preventSafariGesture, { passive: false });
+    container.addEventListener("gestureend", preventSafariGesture, { passive: false });
+
+    return () => {
+      container.removeEventListener("touchstart", handleContainerTouchStart);
+      container.removeEventListener("touchmove", handleContainerTouchMove);
+      container.removeEventListener("touchend", handleContainerTouchEnd);
+      container.removeEventListener("touchcancel", handleContainerTouchEnd);
+      container.removeEventListener("gesturestart", preventSafariGesture);
+      container.removeEventListener("gesturechange", preventSafariGesture);
+      container.removeEventListener("gestureend", preventSafariGesture);
+    };
+  }, []);
 
   // Apply zoom with focal point preserved
   const applyZoom = (factor, clientX, clientY) => {
@@ -2908,7 +3034,9 @@ const ImageEditor = ({ file, onSave, onClose }) => {
 
           // 四角形・楕円・吹き出し・付箋・モザイク・黒塗りの四隅にドラッグ変形ハンドルを描画
           if (el.type === "rect" || el.type === "ellipse" || el.type === "callout" || el.type === "sticky" || el.type === "mosaic" || el.type === "mask") {
-            const hSize = Math.max(8, Math.min(14, canvas.width * 0.006));
+            const hSize = isTouchDevice
+              ? Math.max(13, Math.min(20, canvas.width * 0.0085))
+              : Math.max(8, Math.min(14, canvas.width * 0.006));
             ctx.fillStyle = "#ffffff";
             ctx.strokeStyle = "#2563eb";
             ctx.lineWidth = 2;
@@ -3251,12 +3379,14 @@ const ImageEditor = ({ file, onSave, onClose }) => {
   const getResizeHandleAtPos = (pos, el) => {
     if (!el) return null;
     const padding = 6;
-    const hitRadius = 14;
+    // タブレット・スマホ端末では指先でつまみやすいよう当たり判定を自動拡大（PCは従来通り14px）
+    const hitRadius = isTouchDevice ? Math.max(24, 22 / (zoomScale || 1)) : 14;
+    const tailRadius = isTouchDevice ? Math.max(28, 26 / (zoomScale || 1)) : 18;
 
     // 吹き出しのしっぽ先端ハンドルの当たり判定
     if (el.type === "callout") {
       const tail = getCalloutTailPos(el);
-      if (Math.hypot(pos.x - tail.x, pos.y - tail.y) <= 18) {
+      if (Math.hypot(pos.x - tail.x, pos.y - tail.y) <= tailRadius) {
         return "tail";
       }
     }
@@ -3285,7 +3415,9 @@ const ImageEditor = ({ file, onSave, onClose }) => {
   };
 
   // Pointer Down handler
-  const handleStart = (clientX, clientY, button = 0) => {
+  const handleStart = (clientX, clientY, button = 0, isTouchInput = false) => {
+    if (isPinchingRef.current) return;
+
     // If Space is pressed or Hand tool or Middle click, start pan
     if (isSpacePressed || tool === "hand" || button === 1) {
       isPanningRef.current = true;
@@ -3375,6 +3507,18 @@ const ImageEditor = ({ file, onSave, onClose }) => {
         }
       } else {
         setSelectedId(null);
+        // タブレット操作時：選択ツールで何もない余白を1本指でドラッグした際は、そのまま画面スクロール（パン移動）できるようにする
+        if (isTouchInput && containerRef.current) {
+          isMouseDown.current = false;
+          isPanningRef.current = true;
+          panStartRef.current = {
+            x: clientX,
+            y: clientY,
+            scrollLeft: containerRef.current.scrollLeft,
+            scrollTop: containerRef.current.scrollTop
+          };
+          return;
+        }
       }
     } else if (tool === "brush") {
       pushHistory(elements);
@@ -6503,18 +6647,39 @@ const ImageEditor = ({ file, onSave, onClose }) => {
               >
                 <canvas
                   ref={canvasRef}
-                  onMouseDown={(e) => handleStart(e.clientX, e.clientY, e.button)}
+                  onMouseDown={(e) => handleStart(e.clientX, e.clientY, e.button, false)}
                   onMouseMove={(e) => handleMove(e.clientX, e.clientY, e.shiftKey)}
                   onMouseUp={handleEnd}
                   onDoubleClick={handleDoubleClick}
                   onTouchStart={(e) => {
-                    if (e.touches.length > 0) handleStart(e.touches[0].clientX, e.touches[0].clientY, 0);
+                    if (e.touches.length >= 2 || isPinchingRef.current) return;
+                    if (e.touches.length === 1) {
+                      if (e.cancelable) e.preventDefault();
+                      const t = e.touches[0];
+                      const now = Date.now();
+                      const dt = now - lastTapRef.current.time;
+                      const dist = Math.hypot(t.clientX - lastTapRef.current.x, t.clientY - lastTapRef.current.y);
+                      if (dt > 0 && dt < 320 && dist < 28) {
+                        lastTapRef.current = { time: 0, x: 0, y: 0 };
+                        handleDoubleClick({ clientX: t.clientX, clientY: t.clientY });
+                        return;
+                      }
+                      lastTapRef.current = { time: now, x: t.clientX, y: t.clientY };
+                      handleStart(t.clientX, t.clientY, 0, true);
+                    }
                   }}
                   onTouchMove={(e) => {
-                    if (e.touches.length > 0) handleMove(e.touches[0].clientX, e.touches[0].clientY);
+                    if (e.touches.length >= 2 || isPinchingRef.current) return;
+                    if (e.touches.length === 1) {
+                      if (e.cancelable) e.preventDefault();
+                      handleMove(e.touches[0].clientX, e.touches[0].clientY, false);
+                    }
                   }}
-                  onTouchEnd={handleEnd}
+                  onTouchEnd={() => {
+                    if (!isPinchingRef.current) handleEnd();
+                  }}
                   style={{
+                    touchAction: "none",
                     cursor:
                       isSpacePressed || tool === "hand"
                         ? "grab"
@@ -6524,7 +6689,7 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                             ? "text"
                             : "crosshair"
                   }}
-                  className="w-full h-full block bg-white border border-gray-800"
+                  className="w-full h-full block bg-white border border-gray-800 touch-none"
                 />
 
                 {/* キャンバス上の直接文字入力（枠線なし・点滅カーソルのみ・Canvasとピクセル完全一致） */}
@@ -6649,6 +6814,15 @@ const ImageEditor = ({ file, onSave, onClose }) => {
               <Maximize2 className="w-3.5 h-3.5" />
               <span className="hidden sm:inline">全体表示</span>
             </button>
+
+            {isTouchDevice && (
+              <>
+                <div className="h-4 w-px bg-gray-700" />
+                <span className="text-[11px] font-bold text-emerald-400 whitespace-nowrap px-1">
+                  2本指で拡大・移動
+                </span>
+              </>
+            )}
           </div>
         </div>
       </div>
