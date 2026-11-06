@@ -8,7 +8,7 @@
  */
 
 import React, { useState, useEffect, useRef } from "react";
-import * as pdfjsLib from "pdfjs-dist";
+import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
 import { jsPDF } from "jspdf";
 import JSZip from "jszip";
 import { saveAs } from "file-saver";
@@ -97,13 +97,14 @@ import {
 import { parse as parseEmail, detectFormat as detectEmailFormat } from "omnimail";
 import DOMPurify from "dompurify";
 
-import pdfjsWorker from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+import pdfjsWorker from "pdfjs-dist/legacy/build/pdf.worker.min.mjs?url";
 
 // PDF.js Worker Configuration
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
 const MAX_PDF_CANVAS_PIXELS = 12_000_000;
-const MAX_PDF_CANVAS_SIDE = 8192;
+// iPad Safari (WebKit) の単一Canvas最大辺制限（4096px）を超えない安全値に設定
+const MAX_PDF_CANVAS_SIDE = 4096;
 const LARGE_PDF_FILE_BYTES = 50 * 1024 * 1024;
 const LARGE_PDF_PAGE_COUNT = 100;
 const PDFJS_ASSET_BASE = new URL("pdfjs/", document.baseURI).href;
@@ -115,7 +116,42 @@ const PDFJS_DOCUMENT_OPTIONS = {
   wasmUrl: `${PDFJS_ASSET_BASE}wasm/`,
   enableXfa: true,
   useSystemFonts: true,
+  isOffscreenCanvasSupported: false,
+  isImageDecoderSupported: false,
   stopAtErrors: false
+};
+
+// iPad Safari等の厳格なCanvasメモリ上限対策：使用済みCanvasのバッファを即座に解放する
+const releaseCanvas = (canvas) => {
+  if (!canvas) return;
+  try {
+    canvas.width = 0;
+    canvas.height = 0;
+  } catch {
+    // ignore
+  }
+};
+
+// iPad Safari / iCloud Drive等でのファイル読み込み失敗を防ぐ安全なArrayBuffer取得ヘルパー
+const readFileAsArrayBuffer = async (file) => {
+  if (typeof file.arrayBuffer === "function") {
+    try {
+      return await file.arrayBuffer();
+    } catch {
+      // FileReaderフォールバックへ進む
+    }
+  }
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () =>
+      reject(
+        new Error(
+          "ファイルの読み込みに失敗しました。iCloud Drive等のクラウド上にある場合は、一度端末にダウンロードしてから再度お試しください。"
+        )
+      );
+    reader.readAsArrayBuffer(file);
+  });
 };
 
 class ProcessingCancelledError extends Error {
@@ -180,19 +216,23 @@ const canvasHasVisibleContent = (canvas) => {
   const sample = document.createElement("canvas");
   sample.width = 64;
   sample.height = 64;
-  const context = sample.getContext("2d", { willReadFrequently: true });
-  context.fillStyle = "#ffffff";
-  context.fillRect(0, 0, sample.width, sample.height);
-  context.drawImage(canvas, 0, 0, sample.width, sample.height);
+  try {
+    const context = sample.getContext("2d", { willReadFrequently: true });
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, sample.width, sample.height);
+    context.drawImage(canvas, 0, 0, sample.width, sample.height);
 
-  const pixels = context.getImageData(0, 0, sample.width, sample.height).data;
-  let visiblePixels = 0;
-  for (let i = 0; i < pixels.length; i += 4) {
-    if (pixels[i] < 248 || pixels[i + 1] < 248 || pixels[i + 2] < 248) {
-      visiblePixels += 1;
+    const pixels = context.getImageData(0, 0, sample.width, sample.height).data;
+    let visiblePixels = 0;
+    for (let i = 0; i < pixels.length; i += 4) {
+      if (pixels[i] < 248 || pixels[i + 1] < 248 || pixels[i + 2] < 248) {
+        visiblePixels += 1;
+      }
     }
+    return visiblePixels >= 4;
+  } finally {
+    releaseCanvas(sample);
   }
-  return visiblePixels >= 4;
 };
 
 const renderPdfPageWithFallback = async (page, shouldCancel) => {
@@ -206,7 +246,10 @@ const renderPdfPageWithFallback = async (page, shouldCancel) => {
   let lastError = null;
 
   for (const attempt of attempts) {
-    if (shouldCancel()) throw new ProcessingCancelledError();
+    if (shouldCancel()) {
+      releaseCanvas(lastCanvas);
+      throw new ProcessingCancelledError();
+    }
     const pixelScale = Math.sqrt(
       MAX_PDF_CANVAS_PIXELS / (baseViewport.width * baseViewport.height)
     );
@@ -235,13 +278,19 @@ const renderPdfPageWithFallback = async (page, shouldCancel) => {
         }
       };
       await renderTask.promise;
-      lastCanvas = canvas;
       if (canvasHasVisibleContent(canvas)) {
+        releaseCanvas(lastCanvas);
         return { canvas, warning: null };
       }
+      releaseCanvas(lastCanvas);
+      lastCanvas = canvas;
       lastError = new Error("描画結果が白紙と判定されました");
     } catch (error) {
-      if (shouldCancel()) throw new ProcessingCancelledError();
+      releaseCanvas(canvas);
+      if (shouldCancel()) {
+        releaseCanvas(lastCanvas);
+        throw new ProcessingCancelledError();
+      }
       lastError = error;
     }
   }
@@ -6818,10 +6867,14 @@ export default function App() {
   };
 
   const handleFileSelect = async (e) => {
-    const selectedFiles = Array.from(e.target.files);
-    e.target.value = "";
+    const inputEl = e.target;
+    const selectedFiles = Array.from(inputEl.files || []);
     addLog(`Files selected: ${selectedFiles.length}`);
-    await processFiles(selectedFiles);
+    try {
+      await processFiles(selectedFiles);
+    } finally {
+      inputEl.value = "";
+    }
   };
 
   // トップ画面の「やりたいこと」カードや追加ボタンから、最速でファイル選択ダイアログを起動する。
@@ -7016,6 +7069,8 @@ export default function App() {
           resolve(data);
         } catch {
           resolve(dataUrl);
+        } finally {
+          releaseCanvas(canvas);
         }
       };
       img.onerror = () => resolve(dataUrl);
@@ -7266,7 +7321,7 @@ export default function App() {
         if (isEmailOrDat) {
           setProcessStatus(`メール/datファイルを解析中: ${file.name}`);
           try {
-            const arrayBuffer = await file.arrayBuffer();
+            const arrayBuffer = await readFileAsArrayBuffer(file);
             const bytes = new Uint8Array(arrayBuffer);
 
             // 1. まずOutlook winmail.dat (TNEF) 形式かを高精度パーサーで優先判定
@@ -7505,7 +7560,7 @@ export default function App() {
   };
 
   const convertPdfToImages = async (file) => {
-    const arrayBuffer = await file.arrayBuffer();
+    const arrayBuffer = await readFileAsArrayBuffer(file);
     const loadingTask = pdfjsLib.getDocument({
       data: arrayBuffer,
       ...PDFJS_DOCUMENT_OPTIONS
@@ -7564,12 +7619,14 @@ export default function App() {
           `${file.name} - ${i} / ${pageCount} ページ目を変換中...`
         );
         let page;
+        let renderedCanvas = null;
         try {
           page = await pdf.getPage(i);
           const shouldCancel = () => processingCancelledRef.current;
           const { canvas, warning } = page.isPureXfa
             ? await renderXfaPage(page, shouldCancel)
             : await renderPdfPageWithFallback(page, shouldCancel);
+          renderedCanvas = canvas;
           const originalDataUrl = canvas.toDataURL("image/png", 1.0);
           const estimatedSize = Math.round((originalDataUrl.length * 3) / 4);
 
@@ -7591,10 +7648,16 @@ export default function App() {
           console.error(`PDF page ${i} conversion failed:`, error);
           failedPages.push(i);
         } finally {
+          releaseCanvas(renderedCanvas);
           page?.cleanup();
         }
       }
     } finally {
+      try {
+        await pdf?.cleanup();
+      } catch {
+        // ignore cleanup error
+      }
       // destroy()はここ1箇所だけで呼ぶ（早期リターン時も含めて確実に解放）
       await loadingTask.destroy();
     }
@@ -8196,7 +8259,7 @@ export default function App() {
         id="fileInput"
         className="hidden"
         multiple
-        accept="image/*,application/pdf,.heic,.docx,.xlsx,.xls,.mp4,.mov,.webm,.avi,.dat,.eml,.msg"
+        accept="image/*,application/pdf,.pdf,.heic,.docx,.xlsx,.xls,.mp4,.mov,.webm,.avi,.dat,.eml,.msg"
         onChange={handleFileSelect}
       />
 

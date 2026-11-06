@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
-import * as pdfjsLib from "pdfjs-dist";
+import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
 import {
   X,
   UploadCloud,
@@ -66,11 +66,46 @@ export const PdfCompareModal = ({ isOpen, onClose, pdfjsOptions }) => {
   const sliderContainerRef = useRef(null);
   const [isDraggingSlider, setIsDraggingSlider] = useState(false);
 
+  // iPad SafariのCanvasメモリ制限対策：不要になったCanvasのメモリを即時解放
+  const releaseCanvas = (canvas) => {
+    if (!canvas) return;
+    try {
+      canvas.width = 0;
+      canvas.height = 0;
+    } catch {
+      // ignore
+    }
+  };
+
+  // iPad Safari / iCloud Drive等でのファイル読み込み失敗を防ぐ安全なArrayBuffer取得ヘルパー
+  const readFileAsArrayBuffer = async (file) => {
+    if (typeof file.arrayBuffer === "function") {
+      try {
+        return await file.arrayBuffer();
+      } catch {
+        // FileReaderフォールバックへ進む
+      }
+    }
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () =>
+        reject(
+          new Error(
+            "ファイルの読み込みに失敗しました。iCloud Drive等のクラウド上にある場合は、一度端末にダウンロードしてから再度お試しください。"
+          )
+        );
+      reader.readAsArrayBuffer(file);
+    });
+  };
+
   // PDF読み込みヘルパー
   const loadPdf = async (file) => {
-    const arrayBuffer = await file.arrayBuffer();
+    const arrayBuffer = await readFileAsArrayBuffer(file);
     const task = pdfjsLib.getDocument({
       data: arrayBuffer,
+      isOffscreenCanvasSupported: false,
+      isImageDecoderSupported: false,
       ...(pdfjsOptions || {})
     });
     return await task.promise;
@@ -168,11 +203,24 @@ export const PdfCompareModal = ({ isOpen, onClose, pdfjsOptions }) => {
       setIsProcessing(true);
       setProcessMessage(`第 ${currentPage} ページの高精度差分を解析中...`);
 
+      let canvasOld = null;
+      let canvasNew = null;
+      let c1 = null;
+      let c2 = null;
+      let diffCanvas = null;
+
       try {
         const renderScale = 2.0;
+        const maxSide = 4096;
+        const maxPixels = 12_000_000;
+        const getSafeViewport = (page) => {
+          const base = page.getViewport({ scale: 1 });
+          const pixelScale = Math.sqrt(maxPixels / (base.width * base.height));
+          const sideScale = Math.min(maxSide / base.width, maxSide / base.height);
+          const safeScale = Math.max(0.25, Math.min(renderScale, pixelScale, sideScale));
+          return page.getViewport({ scale: safeScale });
+        };
 
-        let canvasOld = null;
-        let canvasNew = null;
         let wOld = 0, hOld = 0;
         let wNew = 0, hNew = 0;
         let alignedOldUrl = null;
@@ -181,39 +229,47 @@ export const PdfCompareModal = ({ isOpen, onClose, pdfjsOptions }) => {
         // 1. 旧ページのレンダリング (整数ピクセル & 背景白)
         if (docOld && currentPage <= docOld.numPages) {
           const page = await docOld.getPage(currentPage);
-          const viewport = page.getViewport({ scale: renderScale });
-          wOld = Math.round(viewport.width);
-          hOld = Math.round(viewport.height);
-          canvasOld = document.createElement("canvas");
-          canvasOld.width = wOld;
-          canvasOld.height = hOld;
-          const ctxOld = canvasOld.getContext("2d", { willReadFrequently: true });
-          ctxOld.fillStyle = "#ffffff";
-          ctxOld.fillRect(0, 0, wOld, hOld);
-          await page.render({ canvasContext: ctxOld, viewport }).promise;
+          try {
+            const viewport = getSafeViewport(page);
+            wOld = Math.round(viewport.width);
+            hOld = Math.round(viewport.height);
+            canvasOld = document.createElement("canvas");
+            canvasOld.width = wOld;
+            canvasOld.height = hOld;
+            const ctxOld = canvasOld.getContext("2d", { willReadFrequently: true });
+            ctxOld.fillStyle = "#ffffff";
+            ctxOld.fillRect(0, 0, wOld, hOld);
+            await page.render({ canvasContext: ctxOld, viewport }).promise;
+          } finally {
+            page.cleanup();
+          }
           if (isCancelled) return;
         }
 
         // 2. 新ページのレンダリング (整数ピクセル & 背景白)
         if (docNew && currentPage <= docNew.numPages) {
           const page = await docNew.getPage(currentPage);
-          const viewport = page.getViewport({ scale: renderScale });
-          wNew = Math.round(viewport.width);
-          hNew = Math.round(viewport.height);
-          canvasNew = document.createElement("canvas");
-          canvasNew.width = wNew;
-          canvasNew.height = hNew;
-          const ctxNew = canvasNew.getContext("2d", { willReadFrequently: true });
-          ctxNew.fillStyle = "#ffffff";
-          ctxNew.fillRect(0, 0, wNew, hNew);
-          await page.render({ canvasContext: ctxNew, viewport }).promise;
+          try {
+            const viewport = getSafeViewport(page);
+            wNew = Math.round(viewport.width);
+            hNew = Math.round(viewport.height);
+            canvasNew = document.createElement("canvas");
+            canvasNew.width = wNew;
+            canvasNew.height = hNew;
+            const ctxNew = canvasNew.getContext("2d", { willReadFrequently: true });
+            ctxNew.fillStyle = "#ffffff";
+            ctxNew.fillRect(0, 0, wNew, hNew);
+            await page.render({ canvasContext: ctxNew, viewport }).promise;
+          } finally {
+            page.cleanup();
+          }
           if (isCancelled) return;
         }
 
         const maxW = Math.max(wOld, wNew) || 1200;
         const maxH = Math.max(hOld, hNew) || 1600;
 
-        const diffCanvas = document.createElement("canvas");
+        diffCanvas = document.createElement("canvas");
         diffCanvas.width = maxW;
         diffCanvas.height = maxH;
         const diffCtx = diffCanvas.getContext("2d");
@@ -226,7 +282,7 @@ export const PdfCompareModal = ({ isOpen, onClose, pdfjsOptions }) => {
           const ctx2 = canvasNew.getContext("2d", { willReadFrequently: true });
 
           // 正規化用キャンバス
-          const c1 = document.createElement("canvas");
+          c1 = document.createElement("canvas");
           c1.width = maxW;
           c1.height = maxH;
           const c1Ctx = c1.getContext("2d", { willReadFrequently: true });
@@ -234,7 +290,7 @@ export const PdfCompareModal = ({ isOpen, onClose, pdfjsOptions }) => {
           c1Ctx.fillRect(0, 0, maxW, maxH);
           c1Ctx.drawImage(canvasOld, 0, 0);
 
-          const c2 = document.createElement("canvas");
+          c2 = document.createElement("canvas");
           c2.width = maxW;
           c2.height = maxH;
           const c2Ctx = c2.getContext("2d", { willReadFrequently: true });
@@ -369,6 +425,11 @@ export const PdfCompareModal = ({ isOpen, onClose, pdfjsOptions }) => {
       } catch (err) {
         console.error("差分描画エラー:", err);
       } finally {
+        releaseCanvas(canvasOld);
+        releaseCanvas(canvasNew);
+        releaseCanvas(c1);
+        releaseCanvas(c2);
+        releaseCanvas(diffCanvas);
         if (!isCancelled) {
           setIsProcessing(false);
           setProcessMessage("");
@@ -729,9 +790,12 @@ export const PdfCompareModal = ({ isOpen, onClose, pdfjsOptions }) => {
                   <span>PDFを選択</span>
                   <input
                     type="file"
-                    accept="application/pdf"
+                    accept="application/pdf,.pdf"
                     className="hidden"
-                    onChange={(e) => handleFileProcess(e.target.files?.[0], "old")}
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (f) handleFileProcess(f, "old");
+                    }}
                   />
                 </label>
               )}
@@ -774,9 +838,12 @@ export const PdfCompareModal = ({ isOpen, onClose, pdfjsOptions }) => {
                   <span>PDFを選択</span>
                   <input
                     type="file"
-                    accept="application/pdf"
+                    accept="application/pdf,.pdf"
                     className="hidden"
-                    onChange={(e) => handleFileProcess(e.target.files?.[0], "new")}
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (f) handleFileProcess(f, "new");
+                    }}
                   />
                 </label>
               )}
