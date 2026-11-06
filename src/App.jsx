@@ -1491,6 +1491,7 @@ const ImageEditor = ({ file, onSave, onClose }) => {
   // Zoom & Pan states
   const [zoomScale, setZoomScale] = useState(1);
   const [isFitMode, setIsFitMode] = useState(true);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isSpacePressed, setIsSpacePressed] = useState(false);
   const [imgDims, setImgDims] = useState({ width: 0, height: 0 });
   const [hoverCursor, setHoverCursor] = useState("default");
@@ -2030,16 +2031,16 @@ const ImageEditor = ({ file, onSave, onClose }) => {
   const resizeHandleType = useRef(null); // "se" | "sw" | "ne" | "nw" | "r"
   const resizeStartData = useRef(null);
 
-  // Calculate Fit Zoom Scale
+  // Calculate Fit Zoom Scale (余白を最小限に抑えてキャンバス表示画面を最大化)
   const calculateFitScale = () => {
     if (!containerRef.current || !imgRef.current) return 1;
     const container = containerRef.current;
-    const padding = 64;
+    const padding = 24;
     const availWidth = Math.max(100, container.clientWidth - padding);
     const availHeight = Math.max(100, container.clientHeight - padding);
     const scaleX = availWidth / imgRef.current.naturalWidth;
     const scaleY = availHeight / imgRef.current.naturalHeight;
-    return Math.min(scaleX, scaleY, 1.0);
+    return Math.min(scaleX, scaleY, 1.5);
   };
 
   // Initialize background image
@@ -2064,7 +2065,7 @@ const ImageEditor = ({ file, onSave, onClose }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [file]);
 
-  // Window resize handler for fit mode
+  // Window resize & sidebar collapse handler for fit mode
   useEffect(() => {
     const handleResize = () => {
       if (isFitMode && isLoaded.current) {
@@ -2072,9 +2073,12 @@ const ImageEditor = ({ file, onSave, onClose }) => {
         setZoomScale(fit);
       }
     };
+    if (isFitMode && isLoaded.current) {
+      requestAnimationFrame(handleResize);
+    }
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
-  }, [isFitMode]);
+  }, [isFitMode, isSidebarCollapsed]);
 
   // Focus inline text area when editing text starts
   useEffect(() => {
@@ -4500,14 +4504,32 @@ const ImageEditor = ({ file, onSave, onClose }) => {
 
   return (
     <div className="fixed inset-0 z-[100] flex flex-col bg-gray-950 text-white select-none">
-      {/* Editor Header */}
-      <div className="h-16 bg-gray-900 border-b border-gray-800 px-4 sm:px-6 flex items-center justify-between shrink-0 shadow-md">
-        <div className="flex items-center space-x-3">
-          <Pencil className="w-5 h-5 text-orange-500" />
-          <span className="font-bold text-sm sm:text-base truncate max-w-[200px] sm:max-w-md text-gray-100">
-            {file.name} を編集
+      {/* Editor Header (スリム化) */}
+      <div className="h-12 bg-gray-900 border-b border-gray-800 px-3 sm:px-5 flex items-center justify-between shrink-0 shadow-md">
+        <div className="flex items-center space-x-2.5">
+          <button
+            type="button"
+            onClick={() => setIsSidebarCollapsed((prev) => !prev)}
+            title={isSidebarCollapsed ? "左メニューを広げる" : "左メニューを折りたたむ（画面を広くする）"}
+            className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-gray-800 hover:bg-gray-700 text-xs font-bold text-orange-400 border border-gray-700 transition-colors"
+          >
+            {isSidebarCollapsed ? (
+              <>
+                <ChevronRight className="w-3.5 h-3.5" />
+                <span>メニュー展開</span>
+              </>
+            ) : (
+              <>
+                <ChevronLeft className="w-3.5 h-3.5" />
+                <span>メニュー縮小</span>
+              </>
+            )}
+          </button>
+          <Pencil className="w-4 h-4 text-orange-500 hidden sm:inline" />
+          <span className="font-bold text-xs sm:text-sm truncate max-w-[160px] sm:max-w-md text-gray-100">
+            {file.name}
           </span>
-          <span className="hidden md:inline-block text-xs bg-gray-800 text-gray-400 px-2.5 py-1 rounded-full border border-gray-700">
+          <span className="hidden lg:inline-block text-[11px] bg-gray-800 text-gray-400 px-2 py-0.5 rounded-full border border-gray-700">
             {imgDims.width > 0 ? `${imgDims.width} × ${imgDims.height} px` : ""}
           </span>
         </div>
@@ -4517,54 +4539,148 @@ const ImageEditor = ({ file, onSave, onClose }) => {
             onClick={handleUndo}
             disabled={history.length === 0}
             title="元に戻す (Ctrl+Z)"
-            className="flex items-center space-x-1 bg-gray-800 hover:bg-gray-700 disabled:opacity-40 px-3 py-1.5 rounded-lg text-xs sm:text-sm transition-colors border border-gray-700"
+            className="flex items-center space-x-1 bg-gray-800 hover:bg-gray-700 disabled:opacity-40 px-2.5 py-1 rounded-lg text-xs transition-colors border border-gray-700"
           >
-            <Undo className="w-4 h-4" />
+            <Undo className="w-3.5 h-3.5" />
             <span className="hidden sm:inline">元に戻す</span>
           </button>
           <button
             onClick={handleSave}
-            className="flex items-center space-x-1 bg-orange-600 hover:bg-orange-500 px-4 py-1.5 rounded-lg text-xs sm:text-sm font-semibold transition-all shadow-lg shadow-orange-600/20"
+            className="flex items-center space-x-1 bg-orange-600 hover:bg-orange-500 px-3.5 py-1 rounded-lg text-xs font-semibold transition-all shadow-lg shadow-orange-600/20"
           >
-            <Check className="w-4 h-4" />
+            <Check className="w-3.5 h-3.5" />
             <span>確定して保存</span>
           </button>
           <button
             onClick={onClose}
             title="閉じる"
-            className="p-1.5 hover:bg-gray-800 text-gray-400 hover:text-white rounded-lg transition-colors ml-2"
+            className="p-1 hover:bg-gray-800 text-gray-400 hover:text-white rounded-lg transition-colors ml-1"
           >
-            <X className="w-6 h-6" />
+            <X className="w-5 h-5" />
           </button>
         </div>
       </div>
 
       {/* Editor Body */}
       <div className="flex-grow flex flex-col md:flex-row overflow-hidden relative min-h-0">
-        {/* Sidebar Controls (完全に固定幅・独立スクロール) */}
-        <div className="w-full md:w-80 bg-gray-900 border-r border-gray-800 p-4 sm:p-5 space-y-5 shrink-0 overflow-y-auto max-h-[40vh] md:max-h-full z-20 shadow-lg">
+        {isSidebarCollapsed ? (
+          /* 折りたたみ時：超スリムアイコンバー（幅56px・ワンクリックでツール切替＆展開可能） */
+          <div className="w-full md:w-14 bg-gray-900 border-b md:border-b-0 md:border-r border-gray-800 p-1.5 flex md:flex-col items-center gap-1 shrink-0 overflow-x-auto md:overflow-y-auto z-20 shadow-lg">
+            <button
+              type="button"
+              onClick={() => setIsSidebarCollapsed(false)}
+              title="メニューを広げて詳細設定を開く"
+              className="flex flex-col items-center justify-center w-10 h-10 md:w-11 md:h-11 rounded-lg bg-gray-800 hover:bg-orange-600 text-orange-400 hover:text-white border border-gray-700 transition-colors shrink-0 mb-0.5"
+            >
+              <ChevronRight className="w-4 h-4" />
+              <span className="text-[9px] font-bold leading-none mt-0.5">展開</span>
+            </button>
+
+            {[
+              { id: "select", label: "選択", icon: <MousePointer className="w-3.5 h-3.5" /> },
+              { id: "text", label: "文字", icon: <Type className="w-3.5 h-3.5" /> },
+              { id: "arrow", label: "矢印", icon: <ArrowUpRight className="w-3.5 h-3.5" /> },
+              {
+                id: "line",
+                label: "直線",
+                icon: (
+                  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                    <line x1="4" y1="12" x2="20" y2="12" />
+                  </svg>
+                )
+              },
+              {
+                id: "double_line",
+                label: "二重",
+                icon: (
+                  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
+                    <line x1="4" y1="9" x2="20" y2="9" />
+                    <line x1="4" y1="15" x2="20" y2="15" />
+                  </svg>
+                )
+              },
+              { id: "callout", label: "吹出", icon: <MessageSquare className="w-3.5 h-3.5" /> },
+              { id: "sticky", label: "付箋", icon: <StickyNote className="w-3.5 h-3.5" /> },
+              { id: "rect", label: "四角", icon: <Square className="w-3.5 h-3.5" /> },
+              { id: "circle", label: "丸", icon: <Circle className="w-3.5 h-3.5" /> },
+              {
+                id: "ellipse",
+                label: "楕円",
+                icon: (
+                  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+                    <ellipse cx="12" cy="12" rx="10" ry="6" />
+                  </svg>
+                )
+              },
+              { id: "brush", label: "ペン", icon: <Paintbrush className="w-3.5 h-3.5" /> },
+              { id: "mosaic", label: "モザ", icon: <Grid className="w-3.5 h-3.5" /> },
+              { id: "mask", label: "黒塗", icon: <ShieldCheck className="w-3.5 h-3.5" /> },
+              { id: "stamp", label: "印鑑", icon: <Layers className="w-3.5 h-3.5" />, expandOnSelect: true },
+              { id: "crop", label: "比率", icon: <Crop className="w-3.5 h-3.5" />, expandOnSelect: true }
+            ].map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => {
+                  setTool(item.id);
+                  if (item.id !== "select") setSelectedId(null);
+                  if (editingTextState && !editingTextState.id && item.id !== "text") {
+                    setEditingTextState(null);
+                  }
+                  if (item.expandOnSelect) {
+                    setIsSidebarCollapsed(false);
+                  }
+                }}
+                title={item.label}
+                className={`flex flex-col items-center justify-center w-10 h-10 md:w-11 md:h-11 rounded-lg border transition-all shrink-0 ${
+                  tool === item.id
+                    ? "bg-orange-600 border-orange-500 text-white font-bold shadow-md"
+                    : "bg-gray-800/80 border-gray-700/80 text-gray-300 hover:bg-gray-750 hover:text-white"
+                }`}
+              >
+                {item.icon}
+                <span className="text-[9px] leading-none mt-0.5">{item.label}</span>
+              </button>
+            ))}
+          </div>
+        ) : null}
+
+        {/* Sidebar Controls (スリム幅 md:w-60・3列コンパクト配置) */}
+        <div
+          className={`${
+            isSidebarCollapsed ? "hidden" : "w-full md:w-60"
+          } bg-gray-900 border-b md:border-b-0 md:border-r border-gray-800 p-2.5 sm:p-3 space-y-3 shrink-0 overflow-y-auto max-h-[28vh] md:max-h-full z-20 shadow-lg`}
+        >
           {/* Tool Selector */}
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             <div className="flex items-center justify-between">
-              <label className="text-xs font-bold uppercase tracking-wider text-gray-400">
+              <label className="text-[11px] font-bold uppercase tracking-wider text-gray-400">
                 編集ツール
               </label>
-              <span className="text-[11px] text-gray-500">Space+ドラッグで移動</span>
+              <button
+                type="button"
+                onClick={() => setIsSidebarCollapsed(true)}
+                title="左メニューをアイコンバーに折りたたむ"
+                className="flex items-center gap-0.5 text-[11px] font-bold text-orange-400 hover:text-orange-300 bg-gray-800 hover:bg-gray-750 px-2 py-0.5 rounded border border-gray-700 transition-colors"
+              >
+                <ChevronLeft className="w-3 h-3" />
+                <span>たたむ</span>
+              </button>
             </div>
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-3 gap-1">
               <button
                 onClick={() => {
                   setTool("select");
                   if (editingTextState && !editingTextState.id) setEditingTextState(null);
                 }}
-                className={`flex items-center justify-center space-x-2 py-2.5 rounded-lg border transition-all ${
+                className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-lg border transition-all ${
                   tool === "select"
-                    ? "bg-orange-600 border-orange-500 text-white shadow-lg shadow-orange-600/20 font-bold"
+                    ? "bg-orange-600 border-orange-500 text-white shadow-md font-bold"
                     : "bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-750"
                 }`}
               >
-                <MousePointer className="w-4 h-4" />
-                <span className="text-sm">選択・移動</span>
+                <MousePointer className="w-3.5 h-3.5" />
+                <span className="text-[11px] mt-0.5 leading-tight">選択・移動</span>
               </button>
 
               <button
@@ -4572,14 +4688,14 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                   setTool("text");
                   setSelectedId(null);
                 }}
-                className={`flex items-center justify-center space-x-2 py-2.5 rounded-lg border transition-all ${
+                className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-lg border transition-all ${
                   tool === "text"
-                    ? "bg-orange-600 border-orange-500 text-white shadow-lg shadow-orange-600/20 font-bold"
+                    ? "bg-orange-600 border-orange-500 text-white shadow-md font-bold"
                     : "bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-750"
                 }`}
               >
-                <Type className="w-4 h-4" />
-                <span className="text-sm">文字入れ</span>
+                <Type className="w-3.5 h-3.5" />
+                <span className="text-[11px] mt-0.5 leading-tight">文字入れ</span>
               </button>
 
               <button
@@ -4588,14 +4704,14 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                   setSelectedId(null);
                   if (editingTextState && !editingTextState.id) setEditingTextState(null);
                 }}
-                className={`flex items-center justify-center space-x-2 py-2.5 rounded-lg border transition-all ${
+                className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-lg border transition-all ${
                   tool === "arrow"
-                    ? "bg-orange-600 border-orange-500 text-white shadow-lg shadow-orange-600/20 font-bold"
+                    ? "bg-orange-600 border-orange-500 text-white shadow-md font-bold"
                     : "bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-750"
                 }`}
               >
-                <ArrowUpRight className="w-4 h-4 text-orange-400" />
-                <span className="text-sm">矢印(↗)</span>
+                <ArrowUpRight className="w-3.5 h-3.5 text-orange-400" />
+                <span className="text-[11px] mt-0.5 leading-tight">矢印(↗)</span>
               </button>
 
               <button
@@ -4604,17 +4720,17 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                   setSelectedId(null);
                   if (editingTextState && !editingTextState.id) setEditingTextState(null);
                 }}
-                className={`flex items-center justify-center space-x-2 py-2.5 rounded-lg border transition-all ${
+                className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-lg border transition-all ${
                   tool === "line"
-                    ? "bg-orange-600 border-orange-500 text-white shadow-lg shadow-orange-600/20 font-bold"
+                    ? "bg-orange-600 border-orange-500 text-white shadow-md font-bold"
                     : "bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-750"
                 }`}
                 title="直線（Shiftキーで水平・垂直・45度固定）"
               >
-                <svg className="w-4 h-4 text-orange-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                <svg className="w-3.5 h-3.5 text-orange-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
                   <line x1="4" y1="12" x2="20" y2="12" />
                 </svg>
-                <span className="text-sm">直線(―)</span>
+                <span className="text-[11px] mt-0.5 leading-tight">直線(―)</span>
               </button>
 
               <button
@@ -4623,18 +4739,18 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                   setSelectedId(null);
                   if (editingTextState && !editingTextState.id) setEditingTextState(null);
                 }}
-                className={`flex items-center justify-center space-x-2 py-2.5 rounded-lg border transition-all ${
+                className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-lg border transition-all ${
                   tool === "double_line"
-                    ? "bg-orange-600 border-orange-500 text-white shadow-lg shadow-orange-600/20 font-bold"
+                    ? "bg-orange-600 border-orange-500 text-white shadow-md font-bold"
                     : "bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-750"
                 }`}
                 title="二重線（帳票の修正・強調・見出し用）"
               >
-                <svg className="w-4 h-4 text-orange-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
+                <svg className="w-3.5 h-3.5 text-orange-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
                   <line x1="4" y1="9" x2="20" y2="9" />
                   <line x1="4" y1="15" x2="20" y2="15" />
                 </svg>
-                <span className="text-sm">二重線(═)</span>
+                <span className="text-[11px] mt-0.5 leading-tight">二重線(═)</span>
               </button>
 
               <button
@@ -4643,14 +4759,14 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                   setSelectedId(null);
                   if (editingTextState && !editingTextState.id) setEditingTextState(null);
                 }}
-                className={`flex items-center justify-center space-x-2 py-2.5 rounded-lg border transition-all ${
+                className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-lg border transition-all ${
                   tool === "callout"
-                    ? "bg-orange-600 border-orange-500 text-white shadow-lg shadow-orange-600/20 font-bold"
+                    ? "bg-orange-600 border-orange-500 text-white shadow-md font-bold"
                     : "bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-750"
                 }`}
               >
-                <MessageSquare className="w-4 h-4 text-amber-400" />
-                <span className="text-sm">吹き出し(💬)</span>
+                <MessageSquare className="w-3.5 h-3.5 text-amber-400" />
+                <span className="text-[11px] mt-0.5 leading-tight">吹き出し</span>
               </button>
 
               <button
@@ -4659,14 +4775,14 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                   setSelectedId(null);
                   if (editingTextState && !editingTextState.id) setEditingTextState(null);
                 }}
-                className={`flex items-center justify-center space-x-2 py-2.5 rounded-lg border transition-all ${
+                className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-lg border transition-all ${
                   tool === "sticky"
-                    ? "bg-orange-600 border-orange-500 text-white shadow-lg shadow-orange-600/20 font-bold"
+                    ? "bg-orange-600 border-orange-500 text-white shadow-md font-bold"
                     : "bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-750"
                 }`}
               >
-                <StickyNote className="w-4 h-4 text-yellow-300" />
-                <span className="text-sm">付箋(📄)</span>
+                <StickyNote className="w-3.5 h-3.5 text-yellow-300" />
+                <span className="text-[11px] mt-0.5 leading-tight">付箋(📄)</span>
               </button>
 
               <button
@@ -4675,14 +4791,14 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                   setSelectedId(null);
                   if (editingTextState && !editingTextState.id) setEditingTextState(null);
                 }}
-                className={`flex items-center justify-center space-x-2 py-2.5 rounded-lg border transition-all ${
+                className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-lg border transition-all ${
                   tool === "rect"
-                    ? "bg-orange-600 border-orange-500 text-white shadow-lg shadow-orange-600/20 font-bold"
+                    ? "bg-orange-600 border-orange-500 text-white shadow-md font-bold"
                     : "bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-750"
                 }`}
               >
-                <Square className="w-4 h-4" />
-                <span className="text-sm">四角(□)</span>
+                <Square className="w-3.5 h-3.5" />
+                <span className="text-[11px] mt-0.5 leading-tight">四角(□)</span>
               </button>
 
               <button
@@ -4691,14 +4807,14 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                   setSelectedId(null);
                   if (editingTextState && !editingTextState.id) setEditingTextState(null);
                 }}
-                className={`flex items-center justify-center space-x-2 py-2.5 rounded-lg border transition-all ${
+                className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-lg border transition-all ${
                   tool === "circle"
-                    ? "bg-orange-600 border-orange-500 text-white shadow-lg shadow-orange-600/20 font-bold"
+                    ? "bg-orange-600 border-orange-500 text-white shadow-md font-bold"
                     : "bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-750"
                 }`}
               >
-                <Circle className="w-4 h-4" />
-                <span className="text-sm">丸(○)</span>
+                <Circle className="w-3.5 h-3.5" />
+                <span className="text-[11px] mt-0.5 leading-tight">丸(○)</span>
               </button>
 
               <button
@@ -4707,16 +4823,16 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                   setSelectedId(null);
                   if (editingTextState && !editingTextState.id) setEditingTextState(null);
                 }}
-                className={`flex items-center justify-center space-x-2 py-2.5 rounded-lg border transition-all ${
+                className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-lg border transition-all ${
                   tool === "ellipse"
-                    ? "bg-orange-600 border-orange-500 text-white shadow-lg shadow-orange-600/20 font-bold"
+                    ? "bg-orange-600 border-orange-500 text-white shadow-md font-bold"
                     : "bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-750"
                 }`}
               >
-                <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
                   <ellipse cx="12" cy="12" rx="10" ry="6" />
                 </svg>
-                <span className="text-sm">楕円(⬭)</span>
+                <span className="text-[11px] mt-0.5 leading-tight">楕円(⬭)</span>
               </button>
 
               <button
@@ -4725,14 +4841,14 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                   setSelectedId(null);
                   if (editingTextState && !editingTextState.id) setEditingTextState(null);
                 }}
-                className={`flex items-center justify-center space-x-2 py-2.5 rounded-lg border transition-all ${
+                className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-lg border transition-all ${
                   tool === "brush"
-                    ? "bg-orange-600 border-orange-500 text-white shadow-lg shadow-orange-600/20 font-bold"
+                    ? "bg-orange-600 border-orange-500 text-white shadow-md font-bold"
                     : "bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-750"
                 }`}
               >
-                <Paintbrush className="w-4 h-4" />
-                <span className="text-sm">墨消しペン</span>
+                <Paintbrush className="w-3.5 h-3.5" />
+                <span className="text-[11px] mt-0.5 leading-tight">ペン</span>
               </button>
 
               <button
@@ -4741,14 +4857,14 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                   setSelectedId(null);
                   if (editingTextState && !editingTextState.id) setEditingTextState(null);
                 }}
-                className={`flex items-center justify-center space-x-2 py-2.5 rounded-lg border transition-all ${
+                className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-lg border transition-all ${
                   tool === "mosaic"
-                    ? "bg-orange-600 border-orange-500 text-white shadow-lg shadow-orange-600/20 font-bold"
+                    ? "bg-orange-600 border-orange-500 text-white shadow-md font-bold"
                     : "bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-750"
                 }`}
               >
-                <Grid className="w-4 h-4 text-orange-400" />
-                <span className="text-sm">モザイク</span>
+                <Grid className="w-3.5 h-3.5 text-orange-400" />
+                <span className="text-[11px] mt-0.5 leading-tight">モザイク</span>
               </button>
 
               <button
@@ -4757,14 +4873,14 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                   setSelectedId(null);
                   if (editingTextState && !editingTextState.id) setEditingTextState(null);
                 }}
-                className={`flex items-center justify-center space-x-2 py-2.5 rounded-lg border transition-all ${
+                className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-lg border transition-all ${
                   tool === "mask"
-                    ? "bg-orange-600 border-orange-500 text-white shadow-lg shadow-orange-600/20 font-bold"
+                    ? "bg-orange-600 border-orange-500 text-white shadow-md font-bold"
                     : "bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-750"
                 }`}
               >
-                <ShieldCheck className="w-4 h-4 text-emerald-400" />
-                <span className="text-sm">黒塗り</span>
+                <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+                <span className="text-[11px] mt-0.5 leading-tight">黒塗り</span>
               </button>
 
               <button
@@ -4773,14 +4889,14 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                   setSelectedId(null);
                   if (editingTextState && !editingTextState.id) setEditingTextState(null);
                 }}
-                className={`col-span-2 flex items-center justify-center space-x-2 py-2.5 rounded-lg border transition-all ${
+                className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-lg border transition-all ${
                   tool === "stamp"
-                    ? "bg-orange-600 border-orange-500 text-white shadow-lg shadow-orange-600/20 font-bold"
+                    ? "bg-orange-600 border-orange-500 text-white shadow-md font-bold"
                     : "bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-750"
                 }`}
               >
-                <Layers className="w-4 h-4" />
-                <span className="text-sm">スタンプ (承認・社外秘・丸印)</span>
+                <Layers className="w-3.5 h-3.5" />
+                <span className="text-[11px] mt-0.5 leading-tight">スタンプ</span>
               </button>
 
               <button
@@ -4789,27 +4905,27 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                   setSelectedId(null);
                   if (editingTextState && !editingTextState.id) setEditingTextState(null);
                 }}
-                className={`col-span-2 flex items-center justify-center space-x-2 py-2.5 rounded-lg border transition-all ${
+                className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-lg border transition-all ${
                   tool === "crop"
-                    ? "bg-orange-600 border-orange-500 text-white shadow-lg shadow-orange-600/20 font-bold"
+                    ? "bg-orange-600 border-orange-500 text-white shadow-md font-bold"
                     : "bg-orange-950/40 border-orange-500/40 text-orange-400 hover:bg-orange-900/50"
                 }`}
               >
-                <Crop className="w-4 h-4" />
-                <span className="text-sm font-bold">📐 比率・切り抜き＆位置調整</span>
+                <Crop className="w-3.5 h-3.5" />
+                <span className="text-[11px] mt-0.5 leading-tight font-bold">比率・切抜</span>
               </button>
             </div>
 
             {/* AI・スマート自動モザイクボタン */}
-            <div className="pt-2">
+            <div className="pt-1">
               <button
                 type="button"
                 onClick={detectFaces}
                 disabled={isDetectingFaces}
-                className="w-full flex items-center justify-center space-x-2 py-2.5 bg-gradient-to-r from-orange-600 to-amber-600 hover:from-orange-500 hover:to-amber-500 disabled:opacity-50 text-white rounded-lg text-xs sm:text-sm font-bold shadow-md shadow-orange-600/20 transition-all border border-orange-400/40"
+                className="w-full flex items-center justify-center space-x-1.5 py-1.5 bg-gradient-to-r from-orange-600 to-amber-600 hover:from-orange-500 hover:to-amber-500 disabled:opacity-50 text-white rounded-lg text-xs font-bold shadow-sm transition-all border border-orange-400/40"
               >
-                <ScanFace className="w-4 h-4 animate-pulse" />
-                <span>{isDetectingFaces ? "顔を検出中..." : "✨ 顔を自動検出してモザイク"}</span>
+                <ScanFace className="w-3.5 h-3.5 animate-pulse" />
+                <span>{isDetectingFaces ? "顔を検出中..." : "✨ 顔自動モザイク"}</span>
               </button>
             </div>
           </div>
@@ -6630,7 +6746,7 @@ const ImageEditor = ({ file, onSave, onClose }) => {
           )}
           <div
             ref={containerRef}
-            className="w-full h-full overflow-auto p-6 sm:p-10 flex"
+            className="w-full h-full overflow-auto p-2 sm:p-4 flex"
             style={{
               cursor: isSpacePressed || tool === "hand" ? "grab" : "default"
             }}
