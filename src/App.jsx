@@ -3177,6 +3177,11 @@ const ImageEditor = ({ file, onSave, onClose }) => {
         ctx.fillRect(xMin, yMin, w, h);
       }
 
+      // 要素本体の描画終了後、選択枠や変形ハンドルがぼやけないよう filter をリセット
+      if (el.isEraser && el.blur > 0) {
+        ctx.filter = "none";
+      }
+
       // Selection bounding box indicator (スポイト使用中は青枠を描画しない)
       if (!isEyedropperActive && selectedId === el.id && (tool === "select" || !tool || (tool === "eraser" && eraserMode === "rect"))) {
         ctx.strokeStyle = "#2563eb";
@@ -4422,8 +4427,13 @@ const ImageEditor = ({ file, onSave, onClose }) => {
   };
 
   // Update selected element property directly
-  const updateSelectedElement = (updates) => {
+  const updateSelectedElement = (updates, recordHistory = true) => {
     if (!selectedId) return;
+    if (recordHistory) {
+      pushHistory(elements);
+    } else {
+      setFuture([]); // 新規変更時はRedoスタックをクリアして不整合防止
+    }
     setElements((prev) =>
       prev.map((el) => (el.id === selectedId ? { ...el, ...updates } : el))
     );
@@ -5676,11 +5686,21 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                   max="12"
                   step="1"
                   value={eraserBlur}
+                  onMouseDown={() => {
+                    if (selectedId && selectedElement && selectedElement.isEraser) {
+                      pushHistory(elements);
+                    }
+                  }}
+                  onTouchStart={() => {
+                    if (selectedId && selectedElement && selectedElement.isEraser) {
+                      pushHistory(elements);
+                    }
+                  }}
                   onChange={(e) => {
                     const val = parseInt(e.target.value, 10);
                     setEraserBlur(val);
                     if (selectedId && selectedElement && selectedElement.isEraser) {
-                      updateSelectedElement({ blur: val });
+                      updateSelectedElement({ blur: val }, false);
                     }
                   }}
                   className="w-full h-1.5 bg-gray-750 rounded-lg appearance-none cursor-pointer accent-pink-500"
@@ -6646,7 +6666,9 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                       min="1"
                       max="80"
                       value={selectedElement.brushSize || 6}
-                      onChange={(e) => updateSelectedElement({ brushSize: parseInt(e.target.value) })}
+                      onMouseDown={() => pushHistory(elements)}
+                      onTouchStart={() => pushHistory(elements)}
+                      onChange={(e) => updateSelectedElement({ brushSize: parseInt(e.target.value) }, false)}
                       className="w-full h-1.5 bg-gray-750 rounded-lg appearance-none cursor-pointer"
                     />
                   </div>
