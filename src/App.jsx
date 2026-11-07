@@ -54,6 +54,7 @@ import {
   Check,
   X,
   Undo,
+  Redo,
   Paintbrush,
   MousePointer,
   Square,
@@ -1457,27 +1458,39 @@ const ImageEditor = ({ file, onSave, onClose }) => {
   const containerRef = useRef(null);
   const canvasWrapperRef = useRef(null);
 
+  // 💾 ユーザー設定（フォント・サイズ・消しゴム等の記憶）をブラウザのlocalStorageから安全に読み込み
+  const initialPrefs = useRef((() => {
+    try {
+      if (typeof window === "undefined") return {};
+      const saved = localStorage.getItem("converter_editor_prefs");
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
+  })()).current;
+
   // Tools: "select" | "hand" | "brush" | "eraser" | "rect" | "circle" | "text" | "stamp" | "mosaic" | "mask"
   const [tool, setTool] = useState("select");
-  const [color, setColor] = useState("#000000");
-  const [brushSize, setBrushSize] = useState(6); // 枠線の太さ・ブラシサイズ (初期値6px)
-  const [eraserMode, setEraserMode] = useState("brush"); // "brush" (なぞって消す) | "rect" (四角く囲んで消す)
-  const [eraserSize, setEraserSize] = useState(20); // 消しゴムペンの太さ (初期値20px)
-  const [eraserColor, setEraserColor] = useState("#ffffff"); // 消しゴム・紙色カバーの色
+  const [color, setColor] = useState(() => initialPrefs.color || "#000000");
+  const [brushSize, setBrushSize] = useState(() => initialPrefs.brushSize || 6); // 枠線の太さ・ブラシサイズ (初期値6px)
+  const [eraserMode, setEraserMode] = useState(() => initialPrefs.eraserMode || "brush"); // "brush" (なぞって消す) | "rect" (四角く囲んで消す)
+  const [eraserSize, setEraserSize] = useState(() => initialPrefs.eraserSize || 20); // 消しゴムペンの太さ (初期値20px)
+  const [eraserBlur, setEraserBlur] = useState(() => initialPrefs.eraserBlur !== undefined ? initialPrefs.eraserBlur : 2); // 消しゴム境界なじませ・ぼかし (0px〜12px)
+  const [eraserColor, setEraserColor] = useState(() => initialPrefs.eraserColor || "#ffffff"); // 消しゴム・紙色カバーの色
   const [autoPaperColor, setAutoPaperColor] = useState("#ffffff"); // 書類の余白から自動検出した紙の色
   const [maskColor, setMaskColor] = useState("#000000"); // 黒塗り・カバー塗りの色
   const [isEyedropperActive, setIsEyedropperActive] = useState(false); // キャンバス直接スポイト待機状態
   const [eyedropperLabel, setEyedropperLabel] = useState("紙の色");
   const [eyedropperHoverColor, setEyedropperHoverColor] = useState(null);
   const eyedropperCallbackRef = useRef(null);
-  const [fontSize, setFontSize] = useState(40);
-  const [fontFamily, setFontFamily] = useState("sans"); // 選択中のフォント ("sans" | "serif" | "maru" | "hand" | "mono" | etc.)
+  const [fontSize, setFontSize] = useState(() => initialPrefs.fontSize || 40);
+  const [fontFamily, setFontFamily] = useState(() => initialPrefs.fontFamily || "sans"); // 選択中のフォント
   const [customFontInput, setCustomFontInput] = useState(""); // ユーザーPC直接指定フォント名
   const [textRotation, setTextRotation] = useState(0); // テキスト回転角度 (-180° 〜 180° / 0° 〜 360°)
-  const [useTextBg, setUseTextBg] = useState(true);
-  const [textBgColor, setTextBgColor] = useState("#ffffff"); // 座布団の背景色
-  const [textShowBorder, setTextShowBorder] = useState(true); // 座布団の枠線あり/なし
-  const [textBorderColor, setTextBorderColor] = useState("#d1d5db"); // 座布団の枠線色
+  const [useTextBg, setUseTextBg] = useState(() => initialPrefs.useTextBg !== undefined ? initialPrefs.useTextBg : true);
+  const [textBgColor, setTextBgColor] = useState(() => initialPrefs.textBgColor || "#ffffff"); // 座布団の背景色
+  const [textShowBorder, setTextShowBorder] = useState(() => initialPrefs.textShowBorder !== undefined ? initialPrefs.textShowBorder : true); // 座布団の枠線あり/なし
+  const [textBorderColor, setTextBorderColor] = useState(() => initialPrefs.textBorderColor || "#d1d5db"); // 座布団の枠線色
   const [shapeStyle, setShapeStyle] = useState("stroke"); // 初期値を枠線(LINE)にして文字を囲みやすくする
   const [lineDashStyle, setLineDashStyle] = useState("solid"); // 直線・二重線のスタイル ("solid" | "dashed" | "dotted")
   const [stampType, setStampType] = useState("approved");
@@ -1541,6 +1554,44 @@ const ImageEditor = ({ file, onSave, onClose }) => {
   );
   const [selectedId, setSelectedId] = useState(null);
   const [history, setHistory] = useState([]);
+  const [future, setFuture] = useState([]);
+
+  // 💾 ユーザー設定（文字サイズ・フォント・消しゴム太さ・境界ぼかし等）が変更されたらlocalStorageに自動保存
+  useEffect(() => {
+    try {
+      if (typeof window === "undefined") return;
+      const prefs = {
+        color,
+        brushSize,
+        eraserMode,
+        eraserSize,
+        eraserBlur,
+        eraserColor,
+        fontSize,
+        fontFamily,
+        useTextBg,
+        textBgColor,
+        textShowBorder,
+        textBorderColor
+      };
+      localStorage.setItem("converter_editor_prefs", JSON.stringify(prefs));
+    } catch {
+      // ignore quota / permission errors
+    }
+  }, [
+    color,
+    brushSize,
+    eraserMode,
+    eraserSize,
+    eraserBlur,
+    eraserColor,
+    fontSize,
+    fontFamily,
+    useTextBg,
+    textBgColor,
+    textShowBorder,
+    textBorderColor
+  ]);
 
   // クロップ＆配置調整の適用
   const applyCropAndFraming = async () => {
@@ -1559,6 +1610,9 @@ const ImageEditor = ({ file, onSave, onClose }) => {
     // 2. モザイクやスタンプ・ペン等の編集要素のみをクリーンに描画
     elements.forEach((el) => {
       cleanCtx.save();
+      if (el.isEraser && el.blur > 0) {
+        cleanCtx.filter = `blur(${el.blur}px)`;
+      }
       if (el.type === "brush" && el.points.length >= 2) {
         cleanCtx.beginPath();
         cleanCtx.moveTo(el.points[0].x, el.points[0].y);
@@ -2227,7 +2281,14 @@ const ImageEditor = ({ file, onSave, onClose }) => {
         }
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
         e.preventDefault();
-        handleUndo();
+        if (e.shiftKey) {
+          handleRedo();
+        } else {
+          handleUndo();
+        }
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") {
+        e.preventDefault();
+        handleRedo();
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "d") {
         // 要素の複製ショートカット
         if (selectedId) {
@@ -2264,7 +2325,7 @@ const ImageEditor = ({ file, onSave, onClose }) => {
       window.removeEventListener("keyup", handleKeyUp);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedId, editingTextState, isSpacePressed, history, elements]);
+  }, [selectedId, editingTextState, isSpacePressed, history, future, elements]);
 
   // Non-passive wheel listener for smooth zooming centered on mouse
   useEffect(() => {
@@ -2541,7 +2602,8 @@ const ImageEditor = ({ file, onSave, onClose }) => {
     }));
 
   const pushHistory = (currentElements) => {
-    setHistory((prev) => [...prev.slice(-19), cloneElements(currentElements)]);
+    setHistory((prev) => [...prev.slice(-29), cloneElements(currentElements)]);
+    setFuture([]); // 新しい編集操作が入ったためRedo履歴をクリア
   };
 
   // Draw text element supporting multiline & za-buton (background fill & border options) & rotation
@@ -2928,6 +2990,9 @@ const ImageEditor = ({ file, onSave, onClose }) => {
       }
 
       ctx.save();
+      if (el.isEraser && el.blur > 0) {
+        ctx.filter = `blur(${el.blur}px)`;
+      }
       if (el.type === "brush") {
         if (el.points.length >= 2) {
           ctx.beginPath();
@@ -3694,7 +3759,8 @@ const ImageEditor = ({ file, onSave, onClose }) => {
           color: eraserColor,
           fillMode: "fill",
           brushSize: eraserSize,
-          isEraser: true
+          isEraser: true,
+          blur: eraserBlur
         };
         setElements((prev) => [...prev, newEl]);
         activeShapeId.current = newEl.id;
@@ -3707,7 +3773,8 @@ const ImageEditor = ({ file, onSave, onClose }) => {
           points: [pos],
           color: eraserColor,
           brushSize: eraserSize,
-          isEraser: true
+          isEraser: true,
+          blur: eraserBlur
         };
         setElements((prev) => [...prev, newEl]);
         activeShapeId.current = newEl.id;
@@ -4289,8 +4356,19 @@ const ImageEditor = ({ file, onSave, onClose }) => {
   const handleUndo = () => {
     if (history.length === 0) return;
     const prevElements = history[history.length - 1];
+    setFuture((prev) => [...prev, cloneElements(elements)]);
     setElements(prevElements);
     setHistory((prev) => prev.slice(0, -1));
+    setSelectedId(null);
+    setEditingTextState(null);
+  };
+
+  const handleRedo = () => {
+    if (future.length === 0) return;
+    const nextElements = future[future.length - 1];
+    setHistory((prev) => [...prev, cloneElements(elements)]);
+    setElements(nextElements);
+    setFuture((prev) => prev.slice(0, -1));
     setSelectedId(null);
     setEditingTextState(null);
   };
@@ -4517,6 +4595,9 @@ const ImageEditor = ({ file, onSave, onClose }) => {
 
     finalElements.forEach((el) => {
       ctx.save();
+      if (el.isEraser && el.blur > 0) {
+        ctx.filter = `blur(${el.blur}px)`;
+      }
       if (el.type === "brush") {
         if (el.points && el.points.length >= 2) {
           ctx.beginPath();
@@ -4730,6 +4811,15 @@ const ImageEditor = ({ file, onSave, onClose }) => {
           >
             <Undo className="w-3.5 h-3.5" />
             <span className="hidden sm:inline">元に戻す</span>
+          </button>
+          <button
+            onClick={handleRedo}
+            disabled={future.length === 0}
+            title="やり直し (Ctrl+Y / Shift+Ctrl+Z)"
+            className="flex items-center space-x-1 bg-gray-800 hover:bg-gray-700 disabled:opacity-40 px-2.5 py-1 rounded-lg text-xs transition-colors border border-gray-700"
+          >
+            <Redo className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">やり直し</span>
           </button>
           <button
             onClick={handleSave}
@@ -5572,8 +5662,38 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                 </div>
               )}
 
+              {/* 境界なじませ（ぼかし・フェザー）スライダー */}
+              <div className="space-y-1 pt-1 border-t border-gray-800">
+                <div className="flex justify-between text-xs">
+                  <span className="text-gray-300">境界なじませ (ぼかし)</span>
+                  <span className="text-pink-400 font-bold">
+                    {eraserBlur === 0 ? "なし (くっきり)" : `${eraserBlur}px`}
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min="0"
+                  max="12"
+                  step="1"
+                  value={eraserBlur}
+                  onChange={(e) => {
+                    const val = parseInt(e.target.value, 10);
+                    setEraserBlur(val);
+                    if (selectedId && selectedElement && selectedElement.isEraser) {
+                      updateSelectedElement({ blur: val });
+                    }
+                  }}
+                  className="w-full h-1.5 bg-gray-750 rounded-lg appearance-none cursor-pointer accent-pink-500"
+                />
+                <div className="flex justify-between text-[10px] text-gray-500">
+                  <span>くっきり (0px)</span>
+                  <span>自然になじむ (2〜4px)</span>
+                  <span>ふんわり (12px)</span>
+                </div>
+              </div>
+
               <p className="text-[10px] text-gray-400 leading-relaxed">
-                💡 「スポイト」を押して書類の余白をタップすると、その紙と同じ色で文字やゴミを自然に消せます。
+                💡 「スポイト」を押して書類の余白をタップすると、その紙と同じ色で文字やゴミを自然に消せます。境界ぼかしを上げるとスキャン書類の紙質に溶け込みます。
               </p>
             </div>
           )}
@@ -7422,8 +7542,148 @@ const ImageEditor = ({ file, onSave, onClose }) => {
             </div>
           </div>
 
+          {/* ⚡ お気に入りクイックバー (Tablet & PC Quick Action Dock) */}
+          <div className="absolute bottom-16 sm:bottom-16 left-1/2 -translate-x-1/2 z-40 bg-gray-900/95 backdrop-blur-md border border-gray-750/90 rounded-2xl px-2 py-1.5 flex items-center gap-1 sm:gap-1.5 shadow-2xl pointer-events-auto max-w-[96vw] overflow-x-auto scrollbar-none">
+            {/* 選択ツール */}
+            <button
+              type="button"
+              onClick={() => {
+                setTool("select");
+                setIsEyedropperActive(false);
+              }}
+              title="選択・移動 (Select)"
+              className={`flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-bold transition-all shrink-0 ${
+                tool === "select" && !isEyedropperActive
+                  ? "bg-blue-600 text-white shadow-md shadow-blue-600/30 ring-1 ring-blue-400"
+                  : "text-gray-300 hover:text-white hover:bg-gray-800"
+              }`}
+            >
+              <MousePointer className="w-3.5 h-3.5 shrink-0" />
+              <span className="hidden sm:inline">選択</span>
+            </button>
+
+            {/* 文字ツール */}
+            <button
+              type="button"
+              onClick={() => {
+                setTool("text");
+                setIsEyedropperActive(false);
+              }}
+              title={`文字入れ (Text) - ${fontSize}px`}
+              className={`flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-bold transition-all shrink-0 ${
+                tool === "text" && !isEyedropperActive
+                  ? "bg-orange-600 text-white shadow-md shadow-orange-600/30 ring-1 ring-orange-400"
+                  : "text-gray-300 hover:text-white hover:bg-gray-800"
+              }`}
+            >
+              <Type className="w-3.5 h-3.5 shrink-0" />
+              <span className="hidden sm:inline">文字</span>
+            </button>
+
+            {/* 消しゴムツール */}
+            <button
+              type="button"
+              onClick={() => {
+                setTool("eraser");
+                setIsEyedropperActive(false);
+              }}
+              title={`消しゴム・紙色カバー (Eraser) - ${eraserSize}px`}
+              className={`flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-bold transition-all shrink-0 ${
+                tool === "eraser" && !isEyedropperActive
+                  ? "bg-pink-600 text-white shadow-md shadow-pink-600/30 ring-1 ring-pink-400"
+                  : "text-gray-300 hover:text-white hover:bg-gray-800"
+              }`}
+            >
+              <Eraser className="w-3.5 h-3.5 shrink-0" />
+              <span className="hidden sm:inline">消しゴム</span>
+            </button>
+
+            {/* ペン・手書きツール */}
+            <button
+              type="button"
+              onClick={() => {
+                setTool("brush");
+                setIsEyedropperActive(false);
+              }}
+              title={`ペン・手書き (Brush) - ${brushSize}px`}
+              className={`flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-bold transition-all shrink-0 ${
+                tool === "brush" && !isEyedropperActive
+                  ? "bg-emerald-600 text-white shadow-md shadow-emerald-600/30 ring-1 ring-emerald-400"
+                  : "text-gray-300 hover:text-white hover:bg-gray-800"
+              }`}
+            >
+              <Paintbrush className="w-3.5 h-3.5 shrink-0" />
+              <span className="hidden sm:inline">ペン</span>
+            </button>
+
+            {/* 紙色スポイト */}
+            <button
+              type="button"
+              onClick={() =>
+                pickColor((picked) => {
+                  setEraserColor(picked);
+                  setColor(picked);
+                }, "紙面の色")
+              }
+              title="書類タップでスポイト取得"
+              className={`flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-bold transition-all shrink-0 ${
+                isEyedropperActive
+                  ? "bg-amber-500 text-black shadow-md ring-2 ring-amber-300 animate-pulse font-extrabold"
+                  : "text-amber-400 hover:text-amber-300 hover:bg-gray-800"
+              }`}
+            >
+              <Pipette className="w-3.5 h-3.5 shrink-0" />
+              <span className="hidden sm:inline">
+                {isEyedropperActive ? "タップ待機中" : "スポイト"}
+              </span>
+            </button>
+
+            <div className="h-4 w-px bg-gray-700/80 mx-0.5 shrink-0" />
+
+            {/* 元に戻す (Undo) */}
+            <button
+              type="button"
+              onClick={handleUndo}
+              disabled={history.length === 0}
+              title="元に戻す (Ctrl+Z)"
+              className="p-1.5 rounded-lg text-gray-300 hover:text-white hover:bg-gray-800 disabled:opacity-30 disabled:hover:bg-transparent transition-all shrink-0"
+            >
+              <Undo className="w-3.5 h-3.5" />
+            </button>
+
+            {/* やり直し (Redo) */}
+            <button
+              type="button"
+              onClick={handleRedo}
+              disabled={future.length === 0}
+              title="やり直し (Ctrl+Y)"
+              className="p-1.5 rounded-lg text-gray-300 hover:text-white hover:bg-gray-800 disabled:opacity-30 disabled:hover:bg-transparent transition-all shrink-0"
+            >
+              <Redo className="w-3.5 h-3.5" />
+            </button>
+
+            <div className="h-4 w-px bg-gray-700/80 mx-0.5 shrink-0" />
+
+            {/* サイドバー展開 / 折りたたみ */}
+            <button
+              type="button"
+              onClick={() => setIsSidebarCollapsed((prev) => !prev)}
+              title={isSidebarCollapsed ? "メニューを展開" : "メニューを折りたたむ (画面最大化)"}
+              className={`flex items-center gap-1 px-2 py-1.5 rounded-xl text-xs font-semibold transition-all shrink-0 ${
+                isSidebarCollapsed
+                  ? "bg-gray-800 text-orange-400 border border-orange-500/40 hover:bg-gray-750"
+                  : "text-gray-400 hover:text-gray-200 hover:bg-gray-800"
+              }`}
+            >
+              <Sliders className="w-3.5 h-3.5 shrink-0" />
+              <span className="hidden md:inline">
+                {isSidebarCollapsed ? "設定メニュー" : "全画面"}
+              </span>
+            </button>
+          </div>
+
           {/* Floating Zoom Toolbar (キャンバス画面下部に完全固定) */}
-          <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-40 bg-gray-900/90 backdrop-blur-md border border-gray-700/80 rounded-full px-4 py-2 flex items-center space-x-3 shadow-2xl pointer-events-auto">
+          <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-40 bg-gray-900/90 backdrop-blur-md border border-gray-700/80 rounded-full px-4 py-1.5 flex items-center space-x-3 shadow-2xl pointer-events-auto">
             <button
               onClick={handleZoomOut}
               title="縮小 (Zoom Out)"
