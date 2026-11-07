@@ -74,6 +74,7 @@ import {
   Sliders,
   Move,
   Pipette,
+  Eraser,
   Crop,
   Sparkles,
   ShieldCheck,
@@ -1456,10 +1457,19 @@ const ImageEditor = ({ file, onSave, onClose }) => {
   const containerRef = useRef(null);
   const canvasWrapperRef = useRef(null);
 
-  // Tools: "select" | "hand" | "brush" | "rect" | "circle" | "text" | "stamp" | "mosaic" | "mask"
+  // Tools: "select" | "hand" | "brush" | "eraser" | "rect" | "circle" | "text" | "stamp" | "mosaic" | "mask"
   const [tool, setTool] = useState("select");
   const [color, setColor] = useState("#000000");
   const [brushSize, setBrushSize] = useState(6); // 枠線の太さ・ブラシサイズ (初期値6px)
+  const [eraserMode, setEraserMode] = useState("brush"); // "brush" (なぞって消す) | "rect" (四角く囲んで消す)
+  const [eraserSize, setEraserSize] = useState(20); // 消しゴムペンの太さ (初期値20px)
+  const [eraserColor, setEraserColor] = useState("#ffffff"); // 消しゴム・紙色カバーの色
+  const [autoPaperColor, setAutoPaperColor] = useState("#ffffff"); // 書類の余白から自動検出した紙の色
+  const [maskColor, setMaskColor] = useState("#000000"); // 黒塗り・カバー塗りの色
+  const [isEyedropperActive, setIsEyedropperActive] = useState(false); // キャンバス直接スポイト待機状態
+  const [eyedropperLabel, setEyedropperLabel] = useState("紙の色");
+  const [eyedropperHoverColor, setEyedropperHoverColor] = useState(null);
+  const eyedropperCallbackRef = useRef(null);
   const [fontSize, setFontSize] = useState(40);
   const [fontFamily, setFontFamily] = useState("sans"); // 選択中のフォント ("sans" | "serif" | "maru" | "hand" | "mono" | etc.)
   const [customFontInput, setCustomFontInput] = useState(""); // ユーザーPC直接指定フォント名
@@ -1840,24 +1850,118 @@ const ImageEditor = ({ file, onSave, onClose }) => {
     alert("✨ 指定アスペクト比での配置・切り抜きを適用しました！");
   };
 
-  // スポイト機能（EyeDropper API または ネイティブカラーピッカー）
-  const pickColor = async (onColorPicked) => {
-    if (window.EyeDropper) {
-      try {
-        const eyeDropper = new window.EyeDropper();
-        const result = await eyeDropper.open();
-        if (result && result.sRGBHex) {
-          onColorPicked(result.sRGBHex);
-        }
-      } catch {
-        // ユーザーがESC等でキャンセルした場合は何もしない
+  // RGB数値を #rrggbb に変換するヘルパー
+  const rgbToHex = (r, g, b) =>
+    "#" +
+    [r, g, b]
+      .map((v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, "0"))
+      .join("");
+
+  // キャンバス上の指定座標から周囲5×5ピクセルのノイズ除去平均色を取得（iPad Safari / PC 完全対応）
+  const sampleCanvasColorAt = (canvasX, canvasY) => {
+    const canvas = canvasRef.current;
+    if (!canvas || canvas.width === 0 || canvas.height === 0) return null;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+
+    const px = Math.max(0, Math.min(canvas.width - 1, Math.round(canvasX)));
+    const py = Math.max(0, Math.min(canvas.height - 1, Math.round(canvasY)));
+    const radius = 2; // 5×5ピクセル領域
+    const x0 = Math.max(0, px - radius);
+    const y0 = Math.max(0, py - radius);
+    const x1 = Math.min(canvas.width - 1, px + radius);
+    const y1 = Math.min(canvas.height - 1, py + radius);
+    const w = Math.max(1, x1 - x0 + 1);
+    const h = Math.max(1, y1 - y0 + 1);
+
+    try {
+      const imgData = ctx.getImageData(x0, y0, w, h).data;
+      const samples = [];
+      for (let i = 0; i < imgData.length; i += 4) {
+        const a = imgData[i + 3];
+        if (a < 16) continue;
+        const r = imgData[i];
+        const g = imgData[i + 1];
+        const b = imgData[i + 2];
+        const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+        samples.push({ r, g, b, lum });
       }
-    } else {
-      const input = document.createElement("input");
-      input.type = "color";
-      input.onchange = (e) => onColorPicked(e.target.value);
-      input.click();
+      if (samples.length === 0) return "#ffffff";
+      // スキャン書類の1ドット黒ゴミ等を除外するため、輝度順で上下20%をカットした中央60%の平均色を採用
+      samples.sort((a, b) => a.lum - b.lum);
+      const trim = Math.floor(samples.length * 0.2);
+      const core = samples.slice(trim, Math.max(trim + 1, samples.length - trim));
+      const sum = core.reduce(
+        (acc, p) => ({ r: acc.r + p.r, g: acc.g + p.g, b: acc.b + p.b }),
+        { r: 0, g: 0, b: 0 }
+      );
+      return rgbToHex(sum.r / core.length, sum.g / core.length, sum.b / core.length);
+    } catch (e) {
+      console.warn("Canvas color sampling failed:", e);
+      return null;
     }
+  };
+
+  // 書類画像の四辺余白から「その紙の地色」を自動推定するヘルパー
+  const detectPaperColorFromImage = (img) => {
+    if (!img || !img.naturalWidth || !img.naturalHeight) return "#ffffff";
+    const sampleCanvas = document.createElement("canvas");
+    const sw = 100;
+    const sh = 100;
+    sampleCanvas.width = sw;
+    sampleCanvas.height = sh;
+    try {
+      const sCtx = sampleCanvas.getContext("2d");
+      if (!sCtx) return "#ffffff";
+      sCtx.drawImage(img, 0, 0, sw, sh);
+      const data = sCtx.getImageData(0, 0, sw, sh).data;
+      const marginPixels = [];
+      for (let y = 2; y < sh - 2; y++) {
+        for (let x = 2; x < sw - 2; x++) {
+          const isMargin = x < 10 || x >= sw - 10 || y < 10 || y >= sh - 10;
+          if (!isMargin) continue;
+          const idx = (y * sw + x) * 4;
+          if (data[idx + 3] < 128) continue;
+          const r = data[idx];
+          const g = data[idx + 1];
+          const b = data[idx + 2];
+          const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+          if (lum >= 165) {
+            marginPixels.push({ r, g, b, lum });
+          }
+        }
+      }
+      if (marginPixels.length < 10) return "#ffffff";
+      marginPixels.sort((a, b) => a.lum - b.lum);
+      // 紙の地色として最も自然な上位70%付近のピクセル群の平均を取得
+      const startIdx = Math.floor(marginPixels.length * 0.55);
+      const endIdx = Math.max(startIdx + 1, Math.floor(marginPixels.length * 0.85));
+      const slice = marginPixels.slice(startIdx, endIdx);
+      const sum = slice.reduce(
+        (acc, p) => ({ r: acc.r + p.r, g: acc.g + p.g, b: acc.b + p.b }),
+        { r: 0, g: 0, b: 0 }
+      );
+      return rgbToHex(sum.r / slice.length, sum.g / slice.length, sum.b / slice.length);
+    } catch {
+      return "#ffffff";
+    } finally {
+      sampleCanvas.width = 0;
+      sampleCanvas.height = 0;
+    }
+  };
+
+  // キャンバス直接スポイト機能（iPad Safari・スマホ・PC全ブラウザ対応）
+  const pickColor = (onColorPicked, label = "紙の色") => {
+    if (isEyedropperActive) {
+      setIsEyedropperActive(false);
+      setEyedropperHoverColor(null);
+      eyedropperCallbackRef.current = null;
+      return;
+    }
+    eyedropperCallbackRef.current = onColorPicked;
+    setEyedropperLabel(label);
+    setEyedropperHoverColor(null);
+    setIsEyedropperActive(true);
   };
 
   // 顔自動検出＆モザイク配置関数（APIキー不要・完全ローカル）
@@ -2056,6 +2160,10 @@ const ImageEditor = ({ file, onSave, onClose }) => {
         canvas.width = img.naturalWidth;
         canvas.height = img.naturalHeight;
       }
+      // 書類の余白から紙の地色を自動検出して消しゴム（修正ペン）の初期色にセット
+      const detectedPaper = detectPaperColorFromImage(img);
+      setAutoPaperColor(detectedPaper);
+      setEraserColor(detectedPaper);
       if (isFitMode) {
         const fit = calculateFitScale();
         setZoomScale(fit);
@@ -2096,7 +2204,7 @@ const ImageEditor = ({ file, onSave, onClose }) => {
       drawAll();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [elements, selectedId, tool, editingTextState]);
+  }, [elements, selectedId, tool, editingTextState, isEyedropperActive]);
 
   // Keyboard Shortcuts (Space for Pan, Delete/Backspace for removal, Undo, Esc)
   useEffect(() => {
@@ -2127,6 +2235,11 @@ const ImageEditor = ({ file, onSave, onClose }) => {
           duplicateSelectedElement();
         }
       } else if (e.key === "Escape") {
+        if (isEyedropperActive) {
+          setIsEyedropperActive(false);
+          setEyedropperHoverColor(null);
+          eyedropperCallbackRef.current = null;
+        }
         setSelectedId(null);
         setEditingTextState(null);
       } else if (selectedId && ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)) {
@@ -2995,12 +3108,12 @@ const ImageEditor = ({ file, onSave, onClose }) => {
         const yMin = Math.min(el.y, el.y + el.h);
         const w = Math.abs(el.w);
         const h = Math.abs(el.h);
-        ctx.fillStyle = "#000000";
+        ctx.fillStyle = el.color || "#000000";
         ctx.fillRect(xMin, yMin, w, h);
       }
 
-      // Selection bounding box indicator
-      if (selectedId === el.id && (tool === "select" || !tool)) {
+      // Selection bounding box indicator (スポイト使用中は青枠を描画しない)
+      if (!isEyedropperActive && selectedId === el.id && (tool === "select" || !tool || (tool === "eraser" && eraserMode === "rect"))) {
         ctx.strokeStyle = "#2563eb";
         ctx.lineWidth = Math.max(2, Math.min(6, canvas.width * 0.0025));
         ctx.setLineDash([8, 6]);
@@ -3130,8 +3243,8 @@ const ImageEditor = ({ file, onSave, onClose }) => {
       ctx.restore();
     });
 
-    // 🎯 リアルタイム・クロップ枠オーバーレイの描画 (tool === "crop" の時)
-    if (tool === "crop") {
+    // 🎯 リアルタイム・クロップ枠オーバーレイの描画 (tool === "crop" の時・スポイト中は非表示)
+    if (tool === "crop" && !isEyedropperActive) {
       const cropBox = getCropBox();
       if (cropBox) {
         ctx.save();
@@ -3439,6 +3552,20 @@ const ImageEditor = ({ file, onSave, onClose }) => {
 
     if (button !== 0) return; // Only primary mouse button for drawing
 
+    // 💧 キャンバス直接スポイトモード中：クリック／タップした場所の紙面色を取得して適用
+    if (isEyedropperActive) {
+      const pickPos = getCanvasCoords(clientX, clientY);
+      const pickedHex = sampleCanvasColorAt(pickPos.x, pickPos.y);
+      if (pickedHex && eyedropperCallbackRef.current) {
+        eyedropperCallbackRef.current(pickedHex);
+      }
+      eyedropperCallbackRef.current = null;
+      setIsEyedropperActive(false);
+      setEyedropperHoverColor(null);
+      isMouseDown.current = false;
+      return;
+    }
+
     // 画面直接入力中にキャンバスの別の場所をクリックした場合、自動で文字を確定保存
     if (editingTextState) {
       submitText();
@@ -3535,6 +3662,56 @@ const ImageEditor = ({ file, onSave, onClose }) => {
       };
       setElements((prev) => [...prev, newEl]);
       activeShapeId.current = newEl.id;
+    } else if (tool === "eraser") {
+      // 四角消しゴムモードで直前に描いた四角の四隅ハンドルを掴んだ場合はリサイズ可能にする
+      if (eraserMode === "rect" && selectedId) {
+        const curEl = elements.find((e) => e.id === selectedId);
+        const handle = getResizeHandleAtPos(pos, curEl);
+        if (handle) {
+          pushHistory(elements);
+          isResizingElement.current = true;
+          resizeHandleType.current = handle;
+          resizeStartData.current = {
+            pos,
+            origX: curEl.x,
+            origY: curEl.y,
+            origW: curEl.w,
+            origH: curEl.h,
+            origR: curEl.r
+          };
+          return;
+        }
+      }
+      pushHistory(elements);
+      if (eraserMode === "rect") {
+        const newEl = {
+          id: generateId(),
+          type: "rect",
+          x: pos.x,
+          y: pos.y,
+          w: 0,
+          h: 0,
+          color: eraserColor,
+          fillMode: "fill",
+          brushSize: eraserSize,
+          isEraser: true
+        };
+        setElements((prev) => [...prev, newEl]);
+        activeShapeId.current = newEl.id;
+        isDrawingShape.current = true;
+        dragStartPos.current = pos;
+      } else {
+        const newEl = {
+          id: generateId(),
+          type: "brush",
+          points: [pos],
+          color: eraserColor,
+          brushSize: eraserSize,
+          isEraser: true
+        };
+        setElements((prev) => [...prev, newEl]);
+        activeShapeId.current = newEl.id;
+      }
     } else if (tool === "rect" || tool === "ellipse" || tool === "callout" || tool === "sticky" || tool === "mosaic" || tool === "mask") {
       pushHistory(elements);
       const newEl = {
@@ -3544,7 +3721,7 @@ const ImageEditor = ({ file, onSave, onClose }) => {
         y: pos.y,
         w: 0,
         h: 0,
-        color: color,
+        color: tool === "mask" ? (maskColor || "#000000") : color,
         fillMode: (tool === "callout" || tool === "sticky") ? "fill" : shapeStyle,
         brushSize: brushSize,
         fontSize: fontSize || 24,
@@ -3651,7 +3828,14 @@ const ImageEditor = ({ file, onSave, onClose }) => {
     }
 
     if (!isMouseDown.current) {
-      if (tool === "select") {
+      if (isEyedropperActive) {
+        const hoverPos = getCanvasCoords(clientX, clientY);
+        const hoveredHex = sampleCanvasColorAt(hoverPos.x, hoverPos.y);
+        if (hoveredHex) setEyedropperHoverColor(hoveredHex);
+        if (hoverCursor !== "crosshair") setHoverCursor("crosshair");
+        return;
+      }
+      if (tool === "select" || (tool === "eraser" && eraserMode === "rect")) {
         const hoverPos = getCanvasCoords(clientX, clientY);
         if (selectedId) {
           const curEl = elements.find((e) => e.id === selectedId);
@@ -3691,7 +3875,7 @@ const ImageEditor = ({ file, onSave, onClose }) => {
       return;
     }
 
-    if (tool === "select" && isResizingElement.current && selectedId && resizeStartData.current) {
+    if ((tool === "select" || (tool === "eraser" && eraserMode === "rect")) && isResizingElement.current && selectedId && resizeStartData.current) {
       const { pos: startPos, origX, origY, origW, origH, origR } = resizeStartData.current;
       const dx = pos.x - startPos.x;
       const dy = pos.y - startPos.y;
@@ -3818,7 +4002,7 @@ const ImageEditor = ({ file, onSave, onClose }) => {
           }
         })
       );
-    } else if (tool === "brush" && activeShapeId.current) {
+    } else if ((tool === "brush" || (tool === "eraser" && eraserMode === "brush")) && activeShapeId.current) {
       setElements((prev) =>
         prev.map((el) => {
           if (el.id !== activeShapeId.current) return el;
@@ -3828,7 +4012,7 @@ const ImageEditor = ({ file, onSave, onClose }) => {
           };
         })
       );
-    } else if ((tool === "rect" || tool === "ellipse" || tool === "callout" || tool === "sticky" || tool === "arrow" || tool === "line" || tool === "double_line" || tool === "mosaic" || tool === "mask") && isDrawingShape.current && activeShapeId.current) {
+    } else if ((tool === "rect" || (tool === "eraser" && eraserMode === "rect") || tool === "ellipse" || tool === "callout" || tool === "sticky" || tool === "arrow" || tool === "line" || tool === "double_line" || tool === "mosaic" || tool === "mask") && isDrawingShape.current && activeShapeId.current) {
       const start = dragStartPos.current;
       let rawW = pos.x - start.x;
       let rawH = pos.y - start.y;
@@ -3929,7 +4113,10 @@ const ImageEditor = ({ file, onSave, onClose }) => {
         })
       );
       setSelectedId(activeShapeId.current);
-      setTool("select");
+      // 四角消しゴムの場合は連続で消せるようツールを維持し、それ以外の図形は選択モードに切り替える
+      if (tool !== "eraser") {
+        setTool("select");
+      }
     }
     isPanningRef.current = false;
     isMouseDown.current = false;
@@ -4492,7 +4679,7 @@ const ImageEditor = ({ file, onSave, onClose }) => {
         const yMin = Math.min(el.y, el.y + el.h);
         const w = Math.abs(el.w);
         const h = Math.abs(el.h);
-        ctx.fillStyle = "#000000";
+        ctx.fillStyle = el.color || "#000000";
         ctx.fillRect(xMin, yMin, w, h);
       }
       ctx.restore();
@@ -4613,6 +4800,7 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                 )
               },
               { id: "brush", label: "ペン", icon: <Paintbrush className="w-3.5 h-3.5" /> },
+              { id: "eraser", label: "消ゴム", icon: <Eraser className="w-3.5 h-3.5 text-pink-300" /> },
               { id: "mosaic", label: "モザ", icon: <Grid className="w-3.5 h-3.5" /> },
               { id: "mask", label: "黒塗", icon: <ShieldCheck className="w-3.5 h-3.5" /> },
               { id: "stamp", label: "印鑑", icon: <Layers className="w-3.5 h-3.5" />, expandOnSelect: true },
@@ -4849,6 +5037,23 @@ const ImageEditor = ({ file, onSave, onClose }) => {
               >
                 <Paintbrush className="w-3.5 h-3.5" />
                 <span className="text-[11px] mt-0.5 leading-tight">ペン</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setTool("eraser");
+                  setSelectedId(null);
+                  if (editingTextState && !editingTextState.id) setEditingTextState(null);
+                }}
+                title="消しゴム（書類の紙色をスポイトで取って不要な文字や印影を消す）"
+                className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-lg border transition-all ${
+                  tool === "eraser"
+                    ? "bg-orange-600 border-orange-500 text-white shadow-md font-bold"
+                    : "bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-750"
+                }`}
+              >
+                <Eraser className="w-3.5 h-3.5 text-pink-300" />
+                <span className="text-[11px] mt-0.5 leading-tight">消しゴム</span>
               </button>
 
               <button
@@ -5234,6 +5439,145 @@ const ImageEditor = ({ file, onSave, onClose }) => {
             </div>
           )}
 
+          {/* Eraser (消しゴム / 紙色カバー) Settings */}
+          {tool === "eraser" && (
+            <div className="space-y-3 p-3 bg-gray-850 rounded-xl border border-pink-500/40 animate-fadeIn">
+              <div className="flex items-center justify-between">
+                <label className="font-bold text-xs text-pink-300 flex items-center gap-1.5">
+                  <Eraser className="w-3.5 h-3.5" />
+                  消しゴム (紙色カバー)
+                </label>
+                <span
+                  className="w-5 h-5 rounded-full border border-white/80 shadow-xs shrink-0"
+                  style={{ backgroundColor: eraserColor }}
+                  title={`現在の紙色: ${eraserColor}`}
+                />
+              </div>
+
+              {/* 消し方モード切替（なぞる vs 四角く囲む） */}
+              <div className="grid grid-cols-2 gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setEraserMode("brush")}
+                  className={`py-1.5 px-1.5 rounded-lg text-[11px] font-bold border transition-all whitespace-nowrap ${
+                    eraserMode === "brush"
+                      ? "bg-pink-600 border-pink-400 text-white shadow-sm"
+                      : "bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-750"
+                  }`}
+                >
+                  ✏️ なぞって消す
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEraserMode("rect")}
+                  className={`py-1.5 px-1.5 rounded-lg text-[11px] font-bold border transition-all whitespace-nowrap ${
+                    eraserMode === "rect"
+                      ? "bg-pink-600 border-pink-400 text-white shadow-sm"
+                      : "bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-750"
+                  }`}
+                >
+                  ⬛ 四角く消す
+                </button>
+              </div>
+
+              {/* 💧 紙の色をスポイトで取るボタン */}
+              <div className="space-y-1.5 pt-1 border-t border-gray-800">
+                <button
+                  type="button"
+                  onClick={() =>
+                    pickColor((picked) => {
+                      setEraserColor(picked);
+                      if (selectedId && selectedElement && (selectedElement.isEraser || selectedElement.type === "brush" || selectedElement.type === "rect")) {
+                        updateSelectedElement({ color: picked });
+                      }
+                    }, "消しゴム（紙の色）")
+                  }
+                  className={`w-full flex items-center justify-center gap-1.5 py-2 px-2 rounded-lg text-xs font-bold border transition-all shadow-sm whitespace-nowrap ${
+                    isEyedropperActive
+                      ? "bg-emerald-600 border-emerald-400 text-white ring-2 ring-emerald-400/50 animate-pulse"
+                      : "bg-gray-800 hover:bg-gray-750 text-orange-300 border-orange-500/50"
+                  }`}
+                >
+                  <Pipette className="w-3.5 h-3.5 shrink-0" />
+                  <span>
+                    {isEyedropperActive
+                      ? "紙面をタップして色を取得..."
+                      : "💧 紙の色をスポイト取得"}
+                  </span>
+                </button>
+
+                {/* クイック紙色パレット */}
+                <div className="flex items-center justify-between text-[11px] pt-1">
+                  <span className="text-gray-400 whitespace-nowrap">紙色設定:</span>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setEraserColor(autoPaperColor)}
+                      title={`自動検出した紙の色 (${autoPaperColor})`}
+                      className={`px-2 py-0.5 rounded border text-[10px] font-bold flex items-center gap-1 transition-all whitespace-nowrap ${
+                        eraserColor === autoPaperColor
+                          ? "border-pink-400 ring-1 ring-pink-400 text-white bg-gray-800"
+                          : "border-gray-700 text-gray-300 bg-gray-800/80 hover:bg-gray-750"
+                      }`}
+                    >
+                      <span
+                        className="w-3 h-3 rounded-full border border-gray-500 shrink-0"
+                        style={{ backgroundColor: autoPaperColor }}
+                      />
+                      <span>自動紙色</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setEraserColor("#ffffff")}
+                      title="純白 (#ffffff)"
+                      className={`w-5 h-5 rounded-full border transition-transform ${
+                        eraserColor === "#ffffff"
+                          ? "scale-125 ring-2 ring-pink-400 border-white"
+                          : "border-gray-600"
+                      }`}
+                      style={{ backgroundColor: "#ffffff" }}
+                    />
+
+                    <label
+                      title="自由な色を選択"
+                      className="relative cursor-pointer w-5 h-5 rounded-full border border-gray-600 overflow-hidden flex items-center justify-center bg-gradient-to-tr from-red-500 via-green-500 to-blue-500"
+                    >
+                      <input
+                        type="color"
+                        value={eraserColor}
+                        onChange={(e) => setEraserColor(e.target.value)}
+                        className="opacity-0 absolute inset-0 w-full h-full cursor-pointer"
+                      />
+                    </label>
+                  </div>
+                </div>
+              </div>
+
+              {/* ペン型消しゴム時の太さスライダー */}
+              {eraserMode === "brush" && (
+                <div className="space-y-1 pt-1 border-t border-gray-800">
+                  <div className="flex justify-between text-xs">
+                    <span className="text-gray-300">消しゴムの太さ</span>
+                    <span className="text-pink-400 font-bold">{eraserSize}px</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="4"
+                    max="80"
+                    value={eraserSize}
+                    onChange={(e) => setEraserSize(parseInt(e.target.value, 10))}
+                    className="w-full h-1.5 bg-gray-750 rounded-lg appearance-none cursor-pointer accent-pink-500"
+                  />
+                </div>
+              )}
+
+              <p className="text-[10px] text-gray-400 leading-relaxed">
+                💡 「スポイト」を押して書類の余白をタップすると、その紙と同じ色で文字やゴミを自然に消せます。
+              </p>
+            </div>
+          )}
+
           {/* Mosaic Settings */}
           {tool === "mosaic" && (
             <div className="space-y-2 p-3 bg-gray-850 rounded-xl border border-gray-800 animate-fadeIn">
@@ -5259,13 +5603,54 @@ const ImageEditor = ({ file, onSave, onClose }) => {
           )}
 
           {tool === "mask" && (
-            <div className="p-3 bg-gray-850 rounded-xl border border-gray-800 text-xs text-gray-400 animate-fadeIn">
-              <p className="font-semibold text-emerald-400 flex items-center gap-1 mb-1">
-                <ShieldCheck className="w-3.5 h-3.5" />
-                黒塗りマスキング
-              </p>
+            <div className="p-3 bg-gray-850 rounded-xl border border-gray-800 text-xs text-gray-400 space-y-2.5 animate-fadeIn">
+              <div className="flex items-center justify-between">
+                <p className="font-semibold text-emerald-400 flex items-center gap-1">
+                  <ShieldCheck className="w-3.5 h-3.5" />
+                  黒塗り・カバー塗り
+                </p>
+                <span
+                  className="w-4 h-4 rounded-full border border-gray-500"
+                  style={{ backgroundColor: maskColor }}
+                />
+              </div>
+              <div className="flex items-center justify-between gap-1">
+                <div className="flex items-center gap-1.5">
+                  {[
+                    { hex: "#000000", label: "黒" },
+                    { hex: "#ffffff", label: "白" },
+                    { hex: autoPaperColor, label: "紙色" }
+                  ].map((item, idx) => (
+                    <button
+                      key={`${item.hex}-${idx}`}
+                      type="button"
+                      onClick={() => setMaskColor(item.hex)}
+                      className={`px-2 py-1 rounded border text-[11px] font-bold flex items-center gap-1 ${
+                        maskColor === item.hex
+                          ? "bg-emerald-700 border-emerald-400 text-white"
+                          : "bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-750"
+                      }`}
+                    >
+                      <span
+                        className="w-3 h-3 rounded-full border border-gray-500"
+                        style={{ backgroundColor: item.hex }}
+                      />
+                      <span>{item.label}</span>
+                    </button>
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => pickColor((picked) => setMaskColor(picked), "カバー塗りの色")}
+                  className="flex items-center gap-1 px-2 py-1 bg-gray-800 hover:bg-gray-700 text-orange-400 border border-gray-700 rounded text-[11px] font-bold transition-colors"
+                  title="紙面からスポイトで色を取る"
+                >
+                  <Pipette className="w-3.5 h-3.5" />
+                  <span>スポイト</span>
+                </button>
+              </div>
               <p className="text-[11px]">
-                画面上の個人情報や社外秘の文字・金額をドラッグで囲むと、一瞬で黒塗りされます。
+                隠したい文字や金額をドラッグで囲むと、指定した色で塗りつぶします。
               </p>
             </div>
           )}
@@ -5656,6 +6041,17 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                   <div className="flex items-center justify-between pt-1">
                     <span className="text-xs text-gray-300">色</span>
                     <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          pickColor((picked) => updateSelectedElement({ color: picked }), "図形の色")
+                        }
+                        title="紙面からスポイトで色を取得"
+                        className="flex items-center gap-0.5 px-1.5 py-0.5 bg-gray-800 hover:bg-gray-700 text-orange-400 border border-gray-700 rounded text-[10px] font-bold transition-colors"
+                      >
+                        <Pipette className="w-3 h-3" />
+                        <span>スポイト</span>
+                      </button>
                       {["#ff0000", "#000000", "#ffffff", "#0000ff", "#22c55e", "#f59e0b"].map((c) => (
                         <button
                           key={c}
@@ -5720,6 +6116,17 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                   <div className="flex items-center justify-between pt-1">
                     <span className="text-xs text-gray-300">線の色</span>
                     <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          pickColor((picked) => updateSelectedElement({ color: picked }), "線の色")
+                        }
+                        title="紙面からスポイトで色を取得"
+                        className="flex items-center gap-0.5 px-1.5 py-0.5 bg-gray-800 hover:bg-gray-700 text-orange-400 border border-gray-700 rounded text-[10px] font-bold transition-colors"
+                      >
+                        <Pipette className="w-3 h-3" />
+                        <span>スポイト</span>
+                      </button>
                       {["#ff0000", "#2563eb", "#000000", "#16a34a", "#f59e0b", "#ffffff"].map((c) => (
                         <button
                           key={c}
@@ -6071,25 +6478,53 @@ const ImageEditor = ({ file, onSave, onClose }) => {
 
               {/* Mask specific inspector */}
               {selectedElement.type === "mask" && (
-                <div className="space-y-2">
+                <div className="space-y-2.5">
+                  <div className="flex items-center justify-between pt-1">
+                    <span className="text-xs text-gray-300">塗りつぶし色</span>
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          pickColor((picked) => updateSelectedElement({ color: picked }), "カバー塗りの色")
+                        }
+                        title="紙面からスポイトで色を取得"
+                        className="flex items-center gap-0.5 px-1.5 py-0.5 bg-gray-800 hover:bg-gray-700 text-orange-400 border border-gray-700 rounded text-[10px] font-bold transition-colors"
+                      >
+                        <Pipette className="w-3 h-3" />
+                        <span>スポイト</span>
+                      </button>
+                      {["#000000", "#ffffff", autoPaperColor].map((c, idx) => (
+                        <button
+                          key={`${c}-${idx}`}
+                          onClick={() => updateSelectedElement({ color: c })}
+                          className={`w-5 h-5 rounded-full border transition-transform ${
+                            (selectedElement.color || "#000000") === c ? "scale-125 ring-2 ring-blue-400" : "border-gray-600"
+                          }`}
+                          style={{ backgroundColor: c }}
+                        />
+                      ))}
+                    </div>
+                  </div>
                   <p className="text-[11px] text-blue-200/80">
-                    💡 四隅の白い四角（ハンドル）をドラッグして黒塗り範囲を微調整できます。
+                    💡 四隅の白い四角（ハンドル）をドラッグして範囲を微調整できます。
                   </p>
                 </div>
               )}
 
-              {/* Brush specific inspector */}
+              {/* Brush / Eraser specific inspector */}
               {selectedElement.type === "brush" && (
                 <div className="space-y-2.5">
                   <div className="space-y-1">
                     <div className="flex justify-between text-xs">
-                      <span className="text-gray-300">ペンの太さ</span>
+                      <span className="text-gray-300">
+                        {selectedElement.isEraser ? "消しゴムの太さ" : "ペンの太さ"}
+                      </span>
                       <span className="text-blue-400 font-bold">{selectedElement.brushSize || 6}px</span>
                     </div>
                     <input
                       type="range"
                       min="1"
-                      max="60"
+                      max="80"
                       value={selectedElement.brushSize || 6}
                       onChange={(e) => updateSelectedElement({ brushSize: parseInt(e.target.value) })}
                       className="w-full h-1.5 bg-gray-750 rounded-lg appearance-none cursor-pointer"
@@ -6098,9 +6533,23 @@ const ImageEditor = ({ file, onSave, onClose }) => {
                   <div className="flex items-center justify-between pt-1">
                     <span className="text-xs text-gray-300">色</span>
                     <div className="flex items-center gap-1">
-                      {["#000000", "#ffffff", "#ff0000", "#0000ff", "#22c55e"].map((c) => (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          pickColor((picked) => {
+                            updateSelectedElement({ color: picked });
+                            if (selectedElement.isEraser) setEraserColor(picked);
+                          }, "ペンの色")
+                        }
+                        title="紙面からスポイトで色を取得"
+                        className="flex items-center gap-0.5 px-1.5 py-0.5 bg-gray-800 hover:bg-gray-700 text-orange-400 border border-gray-700 rounded text-[10px] font-bold transition-colors"
+                      >
+                        <Pipette className="w-3 h-3" />
+                        <span>スポイト</span>
+                      </button>
+                      {[autoPaperColor, "#000000", "#ffffff", "#ff0000", "#0000ff", "#22c55e"].map((c, idx) => (
                         <button
-                          key={c}
+                          key={`${c}-${idx}`}
                           onClick={() => updateSelectedElement({ color: c })}
                           className={`w-5 h-5 rounded-full border transition-transform ${
                             selectedElement.color === c ? "scale-125 ring-2 ring-blue-400" : "border-gray-600"
@@ -6117,36 +6566,88 @@ const ImageEditor = ({ file, onSave, onClose }) => {
 
           {/* Color Palette (Default for new elements + updates selected element) */}
           <div className="space-y-2">
-            <label className="text-xs font-bold uppercase tracking-wider text-gray-400">
-              基本カラー
-            </label>
-            <div className="flex flex-wrap gap-2">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-bold uppercase tracking-wider text-gray-400">
+                基本カラー
+              </label>
+              <button
+                type="button"
+                onClick={() =>
+                  pickColor((picked) => {
+                    setColor(picked);
+                    setEraserColor(picked);
+                    if (tool === "select" && selectedId && selectedElement) {
+                      if (selectedElement.type === "callout") {
+                        updateSelectedElement({ color: picked, borderColor: picked });
+                      } else if (selectedElement.type !== "mosaic") {
+                        updateSelectedElement({ color: picked });
+                      }
+                    }
+                  }, "基本カラー")
+                }
+                title="書類（キャンバス）の上をタップしてその色を取得"
+                className={`flex items-center gap-1 px-2 py-0.5 rounded border text-[11px] font-bold transition-all ${
+                  isEyedropperActive
+                    ? "bg-emerald-600 border-emerald-400 text-white animate-pulse"
+                    : "bg-gray-800 hover:bg-gray-750 text-orange-400 border-gray-700"
+                }`}
+              >
+                <Pipette className="w-3 h-3" />
+                <span>{isEyedropperActive ? "紙面をタップ..." : "スポイト"}</span>
+              </button>
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5">
               {[
                 { name: "黒 (墨消し/文字)", hex: "#000000" },
                 { name: "白 (白消し)", hex: "#ffffff" },
+                { name: `自動検出した紙色 (${autoPaperColor})`, hex: autoPaperColor, isPaper: true },
                 { name: "赤 (強調/スタンプ)", hex: "#ff0000" },
                 { name: "青 (指示/チェック)", hex: "#0000ff" },
                 { name: "緑 (完了)", hex: "#22c55e" }
-              ].map((c) => (
+              ].map((c, idx) => (
                 <button
-                  key={c.hex}
+                  key={`${c.hex}-${idx}`}
                   onClick={() => {
                     setColor(c.hex);
+                    if (c.isPaper) setEraserColor(c.hex);
                     if (tool === "select" && selectedId && selectedElement) {
                       if (selectedElement.type === "callout") {
                         updateSelectedElement({ color: c.hex, borderColor: c.hex });
-                      } else if (selectedElement.type !== "mosaic" && selectedElement.type !== "mask") {
+                      } else if (selectedElement.type !== "mosaic") {
                         updateSelectedElement({ color: c.hex });
                       }
                     }
                   }}
                   title={c.name}
-                  className={`w-7 h-7 rounded-full border-2 transition-transform shadow-sm ${
-                    color === c.hex ? "scale-125 border-orange-500 ring-2 ring-orange-500/50" : "border-gray-700 hover:scale-105"
+                  className={`w-6 h-6 rounded-full border-2 transition-transform shadow-sm flex items-center justify-center ${
+                    color === c.hex ? "scale-120 border-orange-500 ring-2 ring-orange-500/50" : "border-gray-700 hover:scale-105"
                   }`}
                   style={{ backgroundColor: c.hex }}
-                />
+                >
+                  {c.isPaper && (
+                    <span className="text-[8px] font-bold text-gray-700 leading-none select-none">紙</span>
+                  )}
+                </button>
               ))}
+
+              {/* 自由色カラーピッカー */}
+              <label
+                title="自由な色を選択"
+                className="relative cursor-pointer w-6 h-6 rounded-full border-2 border-gray-700 hover:scale-105 transition-transform overflow-hidden flex items-center justify-center bg-gradient-to-tr from-red-500 via-green-500 to-blue-500"
+              >
+                <input
+                  type="color"
+                  value={color}
+                  onChange={(e) => {
+                    const nextC = e.target.value;
+                    setColor(nextC);
+                    if (tool === "select" && selectedId && selectedElement && selectedElement.type !== "mosaic") {
+                      updateSelectedElement({ color: nextC });
+                    }
+                  }}
+                  className="opacity-0 absolute inset-0 w-full h-full cursor-pointer"
+                />
+              </label>
             </div>
           </div>
 
@@ -6547,6 +7048,37 @@ const ImageEditor = ({ file, onSave, onClose }) => {
 
         {/* Canvas Display & Interaction Area (右側独立ビューポート) */}
         <div className="flex-grow h-full relative overflow-hidden flex flex-col min-w-0 bg-gray-950">
+          {/* 💧 スポイト待機中フローティングガイドバー（iPad・PC共通） */}
+          {isEyedropperActive && (
+            <div className="bg-emerald-950/95 border-b border-emerald-500/60 px-3 py-1.5 flex items-center justify-between gap-2 shrink-0 z-40 shadow-lg text-xs animate-fadeIn">
+              <div className="flex items-center gap-2 min-w-0">
+                <Pipette className="w-4 h-4 text-emerald-400 shrink-0 animate-bounce" />
+                <span className="font-bold text-emerald-200 truncate">
+                  💧【{eyedropperLabel}】書類（キャンバス）上の取りたい色の場所をタップ／クリックしてください
+                </span>
+                {eyedropperHoverColor && (
+                  <span className="hidden sm:inline-flex items-center gap-1.5 bg-gray-900/90 px-2 py-0.5 rounded-full border border-emerald-500/40 font-mono text-[11px] text-white shrink-0">
+                    <span
+                      className="w-3.5 h-3.5 rounded-full border border-white"
+                      style={{ backgroundColor: eyedropperHoverColor }}
+                    />
+                    {eyedropperHoverColor}
+                  </span>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsEyedropperActive(false);
+                  setEyedropperHoverColor(null);
+                  eyedropperCallbackRef.current = null;
+                }}
+                className="px-2.5 py-0.5 bg-gray-800 hover:bg-gray-700 text-gray-200 rounded border border-gray-600 text-[11px] font-bold shrink-0"
+              >
+                キャンセル
+              </button>
+            </div>
+          )}
           {/* 上部固定スリムテキストツールバー（テキスト操作時に1行で常駐表示） */}
           {isTextModeActive && (
             <div className="h-11 bg-gray-900 border-b border-gray-800 px-3 py-1 flex items-center justify-between gap-2 shrink-0 z-30 shadow-md text-xs overflow-x-auto select-none">
